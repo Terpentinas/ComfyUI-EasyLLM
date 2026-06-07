@@ -9,6 +9,14 @@ Chat, prompt enhancement, and high-speed GGUF inference — all inside ComfyUI.
 This custom node suite provides a complete local AI workspace embedded inside ComfyUI — from interactive chat and prompt engineering to model browsing and system prompt management.
 
 ---
+<img width="600" alt="image" src="https://github.com/user-attachments/assets/6179fefb-51df-4a5e-939f-d17e08d2fd99" />
+
+<img width="600" alt="image" src="https://github.com/user-attachments/assets/9d066201-9649-429c-828c-a6f9610e9888" />
+
+<img width="600" alt="image" src="https://github.com/user-attachments/assets/4a8a9945-4c17-493f-9716-2cf191563296" />
+
+<img width="600" alt="image" src="https://github.com/user-attachments/assets/7c469f61-6f04-41c4-be21-e4071a23f985" />
+
 
 ## 🚀 Features
 
