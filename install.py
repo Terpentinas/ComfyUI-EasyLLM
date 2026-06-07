@@ -238,8 +238,75 @@ def check_cpu_compatibility() -> CPUSeverity:
     # Unknown CPU — treat as compatible (most likely has AVX2)
     return CPUSeverity.COMPATIBLE
 
-# -- CLI Argument Parsing -------------------------------------------------
 
+# ── GPU Architecture Detection ───────────────────────────────────────────
+# Older GPU architectures that should use CUDA 11.x (cu118) wheels
+# instead of CUDA 12.x, even if the driver version would map to cu124.
+# This prevents binary incompatibility on older hardware.
+_GPU_ARCH_MAP: list[tuple[str, str]] = [
+    # Kepler (GKxxx) — GTX 600/700 series
+    ("GeForce GTX 680",  "cu118"),
+    ("GeForce GTX 690",  "cu118"),
+    ("GeForce GTX 760",  "cu118"),
+    ("GeForce GTX 770",  "cu118"),
+    ("GeForce GTX 780",  "cu118"),
+    ("GeForce GTX 780 Ti", "cu118"),
+    ("GeForce GTX Titan", "cu118"),
+    ("GeForce GTX 750",  "cu118"),  # Maxwell GM107, but same safe zone
+    # Maxwell (GM2xx) — GTX 900 series
+    ("GeForce GTX 950",  "cu118"),
+    ("GeForce GTX 960",  "cu118"),
+    ("GeForce GTX 970",  "cu118"),
+    ("GeForce GTX 980",  "cu118"),
+    ("GeForce GTX 980 Ti", "cu118"),
+    ("GeForce GTX Titan X", "cu118"),  # Maxwell Titan X
+    # Pascal (GPxxx) — GTX 10xx series (very large install base)
+    ("GeForce GTX 1050", "cu118"),
+    ("GeForce GTX 1060", "cu118"),
+    ("GeForce GTX 1070", "cu118"),
+    ("GeForce GTX 1080", "cu118"),
+    ("GeForce GTX 1080 Ti", "cu118"),
+    ("TITAN X",          "cu118"),  # Pascal Titan X
+    ("TITAN Xp",         "cu118"),
+    # Volta — GV100
+    ("TITAN V",          "cu118"),
+    ("Tesla V100",       "cu118"),
+    # Turing (TUxxx) — GTX 16xx, RTX 20xx
+    ("GeForce GTX 1650", "cu118"),
+    ("GeForce GTX 1660", "cu118"),
+    ("GeForce GTX 1660 Super", "cu118"),
+    ("GeForce GTX 1660 Ti", "cu118"),
+    ("GeForce RTX 2060", "cu118"),
+    ("GeForce RTX 2070", "cu118"),
+    ("GeForce RTX 2080", "cu118"),
+    ("GeForce RTX 2080 Ti", "cu118"),
+    ("TITAN RTX",        "cu118"),
+    ("Quadro RTX",       "cu118"),
+    ("Tesla T4",         "cu118"),
+    # Older Quadro / Tesla workstation cards
+    ("Quadro P",         "cu118"),  # Pascal-based Quadro
+    ("Quadro M",         "cu118"),  # Maxwell-based Quadro
+    ("Quadro K",         "cu118"),  # Kepler-based Quadro
+    ("M4000",            "cu118"),  # Quadro M4000 etc.
+    ("P4000",            "cu118"),  # Quadro P4000 etc.
+    ("Tesla P",          "cu118"),  # Pascal-based Tesla
+    ("Tesla M",          "cu118"),  # Maxwell-based Tesla
+    ("Tesla K",          "cu118"),  # Kepler-based Tesla
+]
+
+# GPU name substrings that are modern enough for CUDA 12.x auto-detection
+# (these fall through to standard driver-version-based detection).
+_MODERN_GPU_PATTERNS: list[str] = [
+    'GeForce RTX 30',   # Ampere
+    'GeForce RTX 40',   # Ada Lovelace
+    'GeForce RTX 50',   # Blackwell
+    'RTX A',            # RTX A-series workstation
+    'RTX Ada',          # Ada Generation workstation
+    'Tesla A',          # Ampere-based Tesla
+]
+
+
+# -- CLI Argument Parsing -------------------------------------------------
 def parse_args():
     """Parse CLI arguments for manual invocation.
 
@@ -496,14 +563,63 @@ def _detect_comfyui_python() -> str | None:
     return None
 
 
+def _detect_gpu_name_from_driver() -> str | None:
+    """Get the GPU product name via nvidia-smi (internal helper).
+
+    Returns:
+        GPU name string (e.g., 'NVIDIA GeForce GTX 1660 Ti')
+        or None if nvidia-smi is unavailable.
+    """
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            name = result.stdout.strip()
+            if name:
+                return name
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
 def detect_backend() -> str | None:
     """Detect the best backend (CUDA version, ROCm, or CPU).
+
+    Detection priority:
+      1. GPU architecture / model name (via nvidia-smi)
+         — maps known older GPUs to CUDA 11.x (cu118)
+         — modern GPUs fall through to driver version detection
+      2. nvidia-smi driver version → CUDA toolkit mapping
+      3. nvcuda.dll existence check (Windows, no nvidia-smi)
+      4. AMD ROCm detection
 
     Returns:
         Backend key (e.g., 'cu124', 'cu118', 'cpu', 'rocm5', 'vulkan')
         or None if NVIDIA GPU exists but version can't be determined.
     """
-    # Check 1: nvidia-smi (most reliable for NVIDIA GPUs)
+    # ── Check 0: GPU architecture / model name detection ──────────────
+    # This is more precise than driver-version mapping. Older GPU
+    # architectures (Kepler, Maxwell, Pascal, Volta, Turing) should use
+    # CUDA 11.x wheels regardless of driver version.
+    gpu_name = _detect_gpu_name_from_driver()
+    if gpu_name:
+        gpu_upper = gpu_name.upper()
+        for pattern, recommended in _GPU_ARCH_MAP:
+            if pattern.upper() in gpu_upper:
+                print(f"  {PREFIX} [OK] Detected GPU: {gpu_name}")
+                print(f"  {PREFIX}     -> Architecture maps to: {BACKEND_LABELS[recommended]}")
+                return recommended
+        # If it matches a known-modern pattern, fall through to driver version
+        is_modern = any(p.upper() in gpu_upper for p in _MODERN_GPU_PATTERNS)
+        if not is_modern:
+            # Unknown GPU — assume older/safer CUDA 11.x
+            print(f"  {PREFIX} [OK] Detected GPU: {gpu_name}")
+            print(f"  {PREFIX}     -> Unknown architecture, using safe fallback: cu118")
+            return 'cu118'
+
+    # ── Check 1: nvidia-smi driver version ────────────────────────────
     try:
         result = subprocess.run(
             ['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'],
@@ -523,7 +639,7 @@ def detect_backend() -> str | None:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
-    # Check 2: nvcuda.dll exists (NVIDIA driver installed but no nvidia-smi)
+    # ── Check 2: nvcuda.dll exists (NVIDIA driver but no nvidia-smi) ──
     try:
         import ctypes
         ctypes.WinDLL('nvcuda.dll')
@@ -537,7 +653,7 @@ def detect_backend() -> str | None:
     except OSError:
         pass
 
-    # Check 3: AMD ROCm
+    # ── Check 3: AMD ROCm ─────────────────────────────────────────────
     try:
         result = subprocess.run(
             ['rocm-smi', '--showproductname'],
@@ -549,7 +665,7 @@ def detect_backend() -> str | None:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
-    # No GPU detected
+    # ── No GPU detected ───────────────────────────────────────────────
     print(f"  {PREFIX} [INFO] No dedicated GPU detected -- will use CPU-only wheel")
     return 'cpu'
 
@@ -1111,7 +1227,7 @@ def _run_install(cmd: list[str], show_progress: bool = False) -> bool:
         print(f"\n  +- Installation Command ----------------------------------------------")
         print(f"  | {' '.join(cmd)}")
         print(f"  +-----------------------------------------------------------------------")
-        print(f"  {PREFIX} Installing... (this may take a few minutes)", end='', flush=True)
+        print(f"  {PREFIX} Installing... (this may take 5-15 minutes depending on your system and internet)", end='', flush=True)
 
     if show_progress:
         process = subprocess.Popen(
@@ -1275,6 +1391,7 @@ def verify_comfyui_runtime(python_path: str, comfy_root: Path | None) -> bool:
         True if verification passed or was skipped (no comfy_root).
     """
     if comfy_root is None or not comfy_root.exists():
+        print(f"  {PREFIX} [SKIP] ComfyUI root not detected — skipping runtime verification")
         return True  # Can't verify — skip silently
 
     print(f"\n  {PREFIX} -- Verifying ComfyUI can find the package --")
@@ -1347,19 +1464,49 @@ def _print_version_summary(
 
 # -- CUDA Runtime Libraries ----------------------------------------------
 
-def install_cuda_libraries(python_path: str, backend: str) -> bool:
-    """Install NVIDIA CUDA 12 library packages needed by the CUDA wheel.
+
+def _get_cuda_packages(backend: str) -> list[str]:
+    """Return the correct NVIDIA CUDA library packages for the backend.
 
     The llama-cpp-python CUDA wheel ships with ggml-cuda.dll but NOT
     the supporting CUDA library DLLs (cublas, cusparse, etc.).
     These must be installed separately from nvidia's pip index.
+    The package suffix must match the CUDA toolkit version the wheel
+    was compiled against.
+
+    Args:
+        backend: Backend key ('cu124', 'cu121', or 'cu118')
+
+    Returns:
+        List of nvidia-* package names for the matching CUDA version
+    """
+    cuda_ver = 'cu12' if backend in ('cu124', 'cu121') else 'cu11'
+    return [
+        f'nvidia-cublas-{cuda_ver}',
+        f'nvidia-cufft-{cuda_ver}',
+        f'nvidia-curand-{cuda_ver}',
+        f'nvidia-cusolver-{cuda_ver}',
+        f'nvidia-cusparse-{cuda_ver}',
+    ]
+
+
+def install_cuda_libraries(python_path: str, backend: str) -> bool:
+    """Install NVIDIA CUDA runtime library packages needed by the CUDA wheel.
+
+    The llama-cpp-python CUDA wheel ships with ggml-cuda.dll but NOT
+    the supporting CUDA library DLLs (cublas, cusparse, etc.).
+    These must be installed separately from nvidia's pip index.
+
+    Automatically selects the correct CUDA version:
+      - cu124 / cu121  →  nvidia-*-cu12  (CUDA 12.x runtime)
+      - cu118          →  nvidia-*-cu11  (CUDA 11.x runtime)
 
     After installation, the DLLs are copied into llama_cpp/lib/
     so that the library loader can find them at runtime.
 
     Args:
         python_path: Path to the target Python executable
-        backend: Backend key (e.g., 'cu124')
+        backend: Backend key (e.g., 'cu124', 'cu118')
 
     Returns:
         True if CUDA libraries are ready, False on failure
@@ -1367,17 +1514,12 @@ def install_cuda_libraries(python_path: str, backend: str) -> bool:
     if backend not in ('cu124', 'cu121', 'cu118'):
         return True  # Not a CUDA backend, nothing to do
 
-    print()
-    print(f"  {PREFIX} -- Installing CUDA 12 runtime libraries --")
-    print(f"  {PREFIX} (required by the pre-built CUDA wheel)")
+    nvidia_packages = _get_cuda_packages(backend)
+    cuda_label = 'CUDA 12' if backend in ('cu124', 'cu121') else 'CUDA 11'
 
-    nvidia_packages = [
-        'nvidia-cublas-cu12',
-        'nvidia-cufft-cu12',
-        'nvidia-curand-cu12',
-        'nvidia-cusolver-cu12',
-        'nvidia-cusparse-cu12',
-    ]
+    print()
+    print(f"  {PREFIX} -- Installing {cuda_label} runtime libraries --")
+    print(f"  {PREFIX} (required by the pre-built CUDA wheel)")
 
     cmd = [
         python_path, '-m', 'pip', 'install',
@@ -1392,20 +1534,19 @@ def install_cuda_libraries(python_path: str, backend: str) -> bool:
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
             if result.returncode != 0:
-                print(f"  {PREFIX} [FAIL] CUDA library installation failed:\n{result.stderr[-300:]}")
+                print(f"  {PREFIX} [FAIL] {cuda_label} library installation failed:\n{result.stderr[-300:]}")
                 return False
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            print(f"  {PREFIX} [FAIL] CUDA library subprocess error: {e}")
+            print(f"  {PREFIX} [FAIL] {cuda_label} library subprocess error: {e}")
             return False
     else:
-        print(f"\n  {PREFIX} Installing NVIDIA CUDA libraries (this may take a few minutes)...")
+        print(f"\n  {PREFIX} Installing {cuda_label} libraries (this may take 2-5 minutes)...")
         if not _run_install(cmd, show_progress=True):
             return False
 
     # Copy CUDA DLLs into llama_cpp/lib/ so the loader finds them
     _copy_cuda_dlls(python_path)
     return True
-
 
 def _copy_cuda_dlls(python_path: str):
     """Copy CUDA DLLs from nvidia packages into llama_cpp/lib/.
@@ -1741,6 +1882,15 @@ def main():
         print(f"  {PREFIX} [Running manually from terminal]")
     print()
 
+    # ── Friendly warning: close ComfyUI first ─────────────────────────
+    if not is_manager_mode():
+        print(f"  {'!' * 66}")
+        print(f"  !!  IMPORTANT: Please close ComfyUI before continuing.")
+        print(f"  !!  If ComfyUI is running, files may be locked and")
+        print(f"  !!  installation may fail with permission errors.")
+        print(f"  {'!' * 66}")
+        print()
+
     # ── Step 1: Detect Python ────────────────────────────────────────────
     print(f"  {PREFIX} -- Step 1/3: Detecting Python environment --")
     python_path = get_python(cli_python=args.python)
@@ -1813,7 +1963,7 @@ def main():
 
         if not confirm("Proceed with installation?"):
             print(f"\n  {PREFIX} Installation cancelled.\n")
-            return
+            sys.exit(1)
 
     # ── Automatic pip self-upgrade ──────────────────────────────────────
     if not args.no_upgrade_pip:
@@ -1882,6 +2032,7 @@ def main():
         print("      pip install llama-cpp-python")
         print()
         print_manual_instructions()
+        sys.exit(1)
 
 
 if __name__ == '__main__':
