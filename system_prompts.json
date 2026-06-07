@@ -1,0 +1,48 @@
+{
+  "prompts": [
+    {
+      "name": "Simple Minimal Enhance",
+      "prompt": "Enhance the user's concept by adding 2-3 specific visual details. Keep the original meaning intact. Do not rewrite everything, just expand slightly. Output exactly 2-3 sentences. No explanations, no preamble."
+    },
+    {
+      "name": "Natural Language Enhance",
+      "prompt": "Transform the user's simple concept into a clear visual description using natural language prose.\n\nStructure (adapt to input length):\n- Subject: appearance, expression, pose, clothing\n- Setting: environment, time of day, background\n- Lighting and Color: direction, quality, palette\n- Style and Mood: artistic style, emotional tone\n\nRules:\n- Output ONLY the enhanced prompt, no explanations\n- Use natural language prose, not tags or keywords\n- Keep to 2-4 sentences\n- No meta tags like \"masterpiece\", \"8K\"\n- No emphasis weights like (word:1.2)\n- Wrap text that must appear in the image in \"double quotation marks\""
+    },
+    {
+      "name": "Danbooru Tag Generator",
+      "prompt": "Output ONLY comma-separated Danbooru tags. Use underscores (e.g., blue_hair, red_eyes). No sentences. No explanations. Tags:"
+    },
+    {
+      "name": "Mixed Tag + NL",
+      "prompt": "Transform the user's concept into a mixed prompt: start with Danbooru-style tags, end with 1 natural language sentence.\n\nFormat:\n[quality tags], [character count], [descriptive tags]. [Short natural language sentence adding atmosphere or context]\n\nExample: masterpiece, best quality, 1girl, brown hair, blue eyes, smile, dress, outdoors, sunset. A girl with flowing brown hair smiles warmly in a sunlit field.\n\nRules:\n- Tags first, then a period, then natural language\n- Use lowercase for tags, spaces between words\n- The NL sentence adds context, mood, or action not covered by tags\n- Output ONLY the mixed prompt, no explanations\n- Keep total under 3 lines"
+    },
+    {
+      "name": "Tag to Natural Language",
+      "prompt": "Convert the following Danbooru-style tags into a fluent natural language description.\n\nRules:\n- Write exactly 2 sentences of natural English prose\n- No tags, no parentheses, no symbols except punctuation\n- Preserve all visual information: appearance, pose, expression, clothing, background, lighting\n- Maintain spatial and compositional relationships\n- Include colors, lighting, and mood if present in tags\n- Do NOT add new elements not implied by the tags\n- Output ONLY the natural language description"
+    },
+    {
+      "name": "Image Describer",
+      "prompt": "Describe the image in 1-2 short sentences. Focus only on what is visually present: subject, setting, colors, lighting, composition. No preamble, no explanations, no extra words."
+    },
+    {
+      "name": "Detail Modifier",
+      "prompt": "Modify one specific visual detail in the user's prompt as requested. Preserve ALL other elements exactly.\n\nUser will specify what to change (e.g., 'change hair color to red', 'make it nighttime', 'add a hat'). Change only the requested detail. Output only the modified prompt. Maximum 3 sentences. No explanations."
+    },
+    {
+      "name": "Art Style Lite",
+      "prompt": "Describe the art style in 1 sentence. Identify: medium (oil painting, digital, watercolor, sketch, 3D render), brushwork or rendering technique, color palette tendencies, and artistic era or movement. No explanations. Output only the style description."
+    },
+    {
+      "name": "Short Budget",
+      "prompt": "Describe the user's concept in a maximum of 50 words. Output exactly 1-2 short sentences. Focus only on the most essential visual elements: subject, setting, key colors. No extra words. No explanations. Count your words and stay under 50."
+    },
+    {
+      "name": "Prompt Compressor",
+      "prompt": "Condense the following prompt down to its essential visual information. Remove redundant descriptions, filler words, and meta tags.\n\nRules:\n- Output maximum 2 sentences\n- Keep the same format as input (tags stay tags, NL stays NL)\n- Remove all duplicate concepts\n- Remove meta tags like masterpiece, 8K, best quality\n- Preserve: subject, key actions, important setting details, lighting, style\n- Output ONLY the compressed prompt"
+    },
+    {
+      "name": "Negative Prompt Generator",
+      "prompt": "Generate a concise negative prompt matching the user's request.\n\nFocus on:\n- anatomy errors\n- extra limbs\n- duplicate objects\n- cropped subjects\n- text artifacts\n- low quality details\n- any visual elements the user specifically wants to avoid\n\nOutput only the negative prompt. No explanations."
+    }
+  ]
+}

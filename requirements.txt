@@ -1,0 +1,47 @@
+# ── LLM Chat for ComfyUI ── Optional Dependencies ─────────────────────
+#
+# llama-cpp-python  (MIT License)
+# ======================================================================
+# C++ inference engine for 30-50+ tok/s GGUF model inference.
+# This is the same engine that powers Ollama and LM Studio.
+#
+# 🚀 AUTOMATIC INSTALLATION (RECOMMENDED)
+# ----------------------------------------------------------------------
+# The install.py script handles everything:
+#   python custom_nodes\llm-chat\install.py
+#
+# It auto-detects:
+#   - Your ComfyUI Python (including Windows Portable's embedded Python)
+#   - Your GPU/CUDA version (via nvidia-smi)
+#   - Installs the correct pre-built wheel — no C++ compiler needed!
+#
+# ComfyUI Manager users: The install.py script is auto-discovered
+# and executed by the Manager during node installation. No action needed.
+#
+# 🔧 MANUAL INSTALL (pick ONE for your GPU)
+# ----------------------------------------------------------------------
+#
+#   GPU / Setup                    | Command
+#   -------------------------------|-----------------------------------------------------------
+#   NVIDIA CUDA 12.x (RTX 3/4/5)   | pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+#   NVIDIA CUDA 11.x (older)       | pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu118
+#   AMD ROCm 5.x                   | pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/rocm5
+#   Vulkan (any GPU)               | pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/vulkan
+#   CPU only                       | pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+#
+#   ComfyUI Windows Portable:      | python_embeded\python.exe -m pip install llama-cpp-python --extra-index-url <URL>
+#
+#   Compile from source (expert):  | set CMAKE_ARGS=-DGGML_CUDA=on && pip install llama-cpp-python
+#                                  | Requires: Visual Studio Build Tools + CUDA Toolkit
+#
+# ⚠ IMPORTANT
+# ----------------------------------------------------------------------
+# This line is COMMENTED OUT because pip install without a wheel index
+# URL will try to COMPILE from source, requiring ~4GB of Visual Studio
+# Build Tools. Use install.py for automatic installation instead.
+#
+# If you uncomment this, you MUST prepend --extra-index-url <WHEEL_URL>
+# in your pip command, or the installation will fail on most Windows
+# systems without a C++ compiler.
+#
+# llama-cpp-python>=0.3.0

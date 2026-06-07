@@ -1,0 +1,2311 @@
+/* ========================================================================
+   LLM Chat — Pure Popup UI Styles
+   ========================================================================
+   All styles for the popup modal: overlay, panel, chat history,
+   input, settings, and the Manage Prompts button (inside the popup).
+   Canvas node widgets are native ComfyUI toggle widgets (no custom CSS).
+
+   Color system uses CSS custom properties defined in :root below.
+   To tweak the theme, edit the variable values in one place.
+   ======================================================================== */
+
+/* ═══════════════════════════════════════════════════════════════════════
+   CSS Custom Properties — Color System
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+    /* ── Surface & Background ────────────────────────────────────── */
+    --llm-bg-base:          #131417;
+    --llm-bg-surface:       #1a1b1e;
+    --llm-bg-raised:        #1e1f22;
+    --llm-bg-input:         #1a1b1e;
+    --llm-bg-hover:         rgba(255, 255, 255, 0.04);
+    --llm-bg-card:          #1e222b;
+
+    /* ── Borders ─────────────────────────────────────────────────── */
+    --llm-border-subtle:    #2a2d32;
+    --llm-border-default:   #2d3139;
+    --llm-border-strong:    #3a3e45;
+    --llm-border-focus:     #4a9eff;
+
+    /* ── Text ────────────────────────────────────────────────────── */
+    --llm-text-primary:     #e8e8ed;
+    --llm-text-secondary:   #9a9aa5;
+    --llm-text-muted:       #5c5c66;
+
+    /* ── Main Accent — Electric Violet ──────────────────────────── */
+    --llm-accent-primary:       #a78bfa;
+    --llm-accent-primary-bg:    rgba(167, 139, 250, 0.15);
+    --llm-accent-primary-glow:  0 0 12px rgba(167, 139, 250, 0.4);
+
+    /* ── Accent Colors ───────────────────────────────────────────── */
+    --llm-accent-blue:      #4a9eff;
+    --llm-accent-blue-bg:   rgba(74, 158, 255, 0.1);
+    --llm-accent-green:     #34d399;
+    --llm-accent-green-bg:  rgba(52, 211, 153, 0.1);
+    --llm-accent-user:      #4a7abf;
+    --llm-accent-user-bg:   rgba(74, 122, 191, 0.12);
+    --llm-accent-progress:  linear-gradient(90deg, #4a9eff, #34d399);
+
+    /* ── Button Colors ───────────────────────────────────────────── */
+    --llm-btn-default-bg:       #22252e;
+    --llm-btn-default-hover:    #2a2d36;
+    --llm-btn-primary-bg:       #22252e;
+    --llm-btn-primary-hover:    #2a2d36;
+    --llm-btn-primary-glow:     var(--llm-accent-primary-glow);
+    --llm-btn-danger-bg:        #2a1f1f;
+    --llm-btn-danger-hover:     #3a2a2a;
+    --llm-btn-accent-bg:        #22252e;
+    --llm-btn-accent-hover:     #2a2d36;
+    --llm-btn-ghost-color:      #6c6c78;
+    --llm-btn-ghost-hover:      #e8e8ed;
+
+    /* ── Toast Colors ────────────────────────────────────────────── */
+    --llm-toast-info-bg:        #1e1f22;
+    --llm-toast-success-bg:     #1e1f22;
+    --llm-toast-error-bg:       #2a1f1f;
+    --llm-toast-warning-bg:     #2a241a;
+}
+
+/* ── Popup Overlay (full-screen backdrop) ──────────────────────────── */
+
+.llm-popup-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    color: var(--llm-text-primary);
+}
+
+/* ── Popup Panel ─────────────────────────────────────────────────────── */
+
+.llm-popup-panel {
+    background: var(--llm-bg-surface);
+    border: 1px solid var(--llm-border-default);
+    border-radius: 10px;
+    padding: 0;
+    width: 760px;
+    max-width: 90vw;
+    max-height: 98vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.65);
+    overflow: hidden;
+}
+
+/* ── Popup Header ────────────────────────────────────────────────────── */
+
+.llm-popup-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--llm-border-subtle);
+    background: var(--llm-bg-raised);
+    flex-shrink: 0;
+}
+.llm-popup-header-title {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+.llm-popup-close-btn {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: none;
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    cursor: pointer;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    transition: background 0.15s, color 0.15s;
+}
+.llm-popup-close-btn:hover {
+    background: rgba(239, 68, 68, 0.35);
+    color: #fca5a5;
+}
+
+/* ── Popup Body (scrollable content area) ──────────────────────────── */
+
+.llm-popup-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+}
+
+/* ── Chat History Container ──────────────────────────────────────────── */
+
+.llm-popup-history {
+    flex: 1;
+    overflow-y: auto;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 4px 0;
+    min-height: 80px;
+    scroll-behavior: smooth;
+}
+
+/* ── Empty Chat Placeholder ──────────────────────────────────────────── */
+
+.llm-popup-history-empty {
+    color: var(--llm-text-muted);
+    text-align: center;
+    padding: 40px 12px;
+    font-size: 12px;
+    font-style: italic;
+}
+
+/* ── Message Bubbles ─────────────────────────────────────────────────── */
+
+.llm-chat-bubble {
+    position: relative;
+    margin-bottom: 6px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+.llm-chat-bubble:last-child {
+    margin-bottom: 0;
+}
+
+.llm-chat-bubble-user {
+    background: var(--llm-bg-card);
+    border-left: none;
+    text-align: right;
+    padding: 12px;
+    border-radius: 4px;
+}
+.llm-chat-bubble-assistant {
+    background: transparent;
+    border-left: none;
+    text-align: left;
+    padding: 8px 12px;
+}
+
+.llm-chat-bubble-label {
+    font-weight: 500;
+    font-size: 10px;
+    opacity: 0.6;
+    margin-bottom: 4px;
+    letter-spacing: 0.02em;
+}
+.llm-chat-bubble-label-left {
+    text-align: left;
+    color: var(--llm-accent-green);
+    opacity: 0.9;
+    font-weight: 600;
+}
+.llm-chat-bubble-label-right {
+    text-align: right;
+    color: var(--llm-text-secondary);
+}
+
+/* ── Model name badge (enhancer output bubbles) ───────────────────── */
+.llm-chat-model-badge {
+    font-size: 1em;
+    color: var(--llm-accent-primary);
+    margin-left: 8px;
+    font-weight: normal;
+}
+
+.llm-chat-bubble-text {
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+
+/* ── Image thumbnail in user bubbles (multimodal) ─────────────────── */
+
+.llm-chat-bubble-image {
+    margin: 6px 0;
+    max-width: 100%;
+}
+.llm-chat-bubble-image img {
+    max-width: 240px;
+    max-height: 180px;
+    border-radius: 6px;
+    border: 1px solid var(--llm-border-strong);
+    cursor: zoom-in;
+    display: block;
+    background: var(--llm-bg-base);
+    object-fit: contain;
+}
+.llm-chat-bubble-image img:hover {
+    border-color: var(--llm-border-strong);
+}
+
+/* ── Input Row: textarea + Send button ────────────────────────────── */
+
+.llm-popup-input-row {
+    display: flex;
+    gap: 4px;
+    align-items: flex-start;
+    flex-shrink: 0;
+    background: var(--llm-bg-card);      /* #1e222b — lighter than surface */
+    border: 1px solid var(--llm-border-strong);  /* #3a3f4d subtle border */
+    border-radius: 8px;
+    padding: 6px 8px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+/* Focus glow on the row when the textarea is active */
+.llm-popup-input-row:focus-within {
+    border-color: var(--llm-accent-primary);
+    box-shadow: 0 0 0 1px var(--llm-accent-primary);
+}
+
+.llm-popup-input {
+    flex: 1;
+    background: transparent;
+    color: var(--llm-text-primary);
+    border: none;
+    border-radius: 0;
+    padding: 4px 4px;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    resize: none;
+    height: 36px;
+    min-height: 36px;
+    max-height: 120px;
+    box-sizing: border-box;
+    outline: none;
+}
+
+.llm-popup-send-btn {
+    background: var(--llm-accent-primary);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 16px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    height: 36px;
+    flex-shrink: 0;
+    line-height: 1;
+    transition: background 0.15s, box-shadow 0.15s;
+}
+.llm-popup-send-btn:hover {
+    background: #b99afb;
+    box-shadow: var(--llm-accent-primary-glow);
+}
+.llm-popup-send-btn:active {
+    background: #9068e0;
+}
+
+/* ── Settings Section (collapsible) ──────────────────────────────────── */
+
+.llm-popup-settings {
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+    padding: 6px 12px;
+    background: var(--llm-bg-raised);
+    flex-shrink: 0;
+}
+
+/* Collapsible toggle header — hides native <details> disclosure triangle */
+.llm-popup-settings > summary.llm-popup-settings-header {
+    font-weight: bold;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--llm-text-secondary);
+    cursor: pointer;
+    user-select: none;
+    padding: 4px 0;
+    outline: none;
+    list-style: none;
+}
+.llm-popup-settings > summary.llm-popup-settings-header::-webkit-details-marker {
+    display: none;
+}
+.llm-popup-settings > summary.llm-popup-settings-header:hover {
+    color: #aaaacc;
+}
+
+.llm-popup-settings-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+}
+.llm-popup-settings-row:last-child {
+    margin-bottom: 0;
+}
+
+.llm-popup-settings-label {
+    color: var(--llm-text-secondary);
+    font-size: 11px;
+    min-width: 90px;
+    flex-shrink: 0;
+}
+
+.llm-popup-settings-select,
+.llm-popup-settings-input {
+    background: var(--llm-bg-base);
+    color: var(--llm-text-primary);
+    border: 1px solid var(--llm-border-strong);
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 12px;
+    flex: 1;
+    outline: none;
+    transition: border-color 0.15s;
+}
+.llm-popup-settings-select:hover,
+.llm-popup-settings-input:hover {
+    border-color: var(--llm-border-focus);
+}
+.llm-popup-settings-select:focus,
+.llm-popup-settings-input:focus {
+    border-color: var(--llm-accent-primary);
+}
+.llm-popup-settings-input[type="number"] {
+    max-width: 80px;
+    flex: 0 0 80px;
+}
+
+/* Single-column sectioned settings layout */
+.llm-popup-settings-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.llm-popup-settings-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 0;
+}
+.llm-popup-settings-section[open] {
+    /* <details> open state — content is visible */
+}
+.llm-popup-settings-section-header {
+    font-weight: bold;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--llm-text-secondary);
+    padding: 6px 0 2px 0;
+    border-bottom: 1px solid var(--llm-border-subtle);
+    margin-bottom: 4px;
+}
+.llm-popup-settings-section > summary.llm-popup-settings-section-header {
+    cursor: pointer;
+    user-select: none;
+}
+.llm-popup-settings-section > summary.llm-popup-settings-section-header:hover {
+    color: #aaaacc;
+}
+
+/* System prompt custom textarea (inside settings) */
+.llm-popup-custom-prompt {
+    background: var(--llm-bg-input);
+    color: var(--llm-text-primary);
+    border: 1px solid var(--llm-border-default);
+    border-radius: 3px;
+    padding: 6px;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 12px;
+    resize: vertical;
+    min-height: 50px;
+    width: 100%;
+    box-sizing: border-box;
+    outline: none;
+}
+.llm-popup-custom-prompt:focus {
+    border-color: var(--llm-border-focus);
+}
+.llm-popup-custom-prompt:disabled {
+    opacity: 0.4;
+    background: rgba(20, 20, 30, 0.5);
+}
+
+/* ── Footer: Save & Close button ────────────────────────────────────── */
+
+.llm-popup-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--llm-border-subtle);
+    background: var(--llm-bg-raised);
+    flex-shrink: 0;
+}
+
+.llm-popup-save-btn {
+    background: rgba(52, 211, 153, 0.15);
+    color: #34d399;
+    border: 1px solid rgba(52, 211, 153, 0.3);
+    border-radius: 6px;
+    padding: 6px 16px;
+    cursor: pointer;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.llm-popup-save-btn:hover {
+    background: rgba(52, 211, 153, 0.25);
+    border-color: var(--llm-accent-primary);
+    color: #6ee7b7;
+}
+.llm-popup-save-btn:active {
+    background: rgba(52, 211, 153, 0.35);
+}
+
+/* ── Custom Scrollbar (Webkit) — Premium Dark ────────────────────────── */
+
+.llm-popup-history::-webkit-scrollbar,
+.llm-popup-body::-webkit-scrollbar {
+    width: 4px;
+}
+.llm-popup-history::-webkit-scrollbar-track,
+.llm-popup-body::-webkit-scrollbar-track {
+    background: transparent;
+}
+.llm-popup-history::-webkit-scrollbar-thumb,
+.llm-popup-body::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 2px;
+    transition: background 0.2s ease;
+}
+.llm-popup-history::-webkit-scrollbar-thumb:hover,
+.llm-popup-body::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+/* ── Manage Prompts button (inside settings) ─────────────────────────── */
+
+.llm-popup-manage-btn {
+    background: var(--llm-btn-default-bg);
+    color: var(--llm-text-secondary);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 11px;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.llm-popup-manage-btn:hover {
+    color: var(--llm-text-primary);
+    border-color: var(--llm-border-strong);
+    background: var(--llm-btn-default-hover);
+}
+
+/* ── Progress Bar (thin strip below header) ──────────────────────────── */
+
+.llm-popup-progress {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+    flex-shrink: 0;
+}
+.llm-popup-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--llm-accent-progress);
+    transition: width 0.2s ease;
+}
+
+/* ── Prompt Manager Dialog Styles ─────────────────────────────────────── */
+
+.llm-manager-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7); z-index: 10000;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px; color: var(--llm-text-primary);
+}
+
+.llm-manager-panel {
+    background: var(--llm-bg-surface);
+    border: 1px solid var(--llm-border-default);
+    border-radius: 10px; padding: 0;
+    width: 620px; max-width: 90vw; max-height: 85vh;
+    display: flex; flex-direction: column;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.65); overflow: hidden;
+    resize: both;
+    min-width: 400px;
+    min-height: 300px;
+}
+
+.llm-manager-panel::-webkit-resizer {
+    background: linear-gradient(135deg, transparent 50%, var(--llm-border-default) 50%);
+    border-radius: 0 0 8px 0;
+    width: 14px;
+    height: 14px;
+}
+
+.llm-manager-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 16px; border-bottom: 1px solid var(--llm-border-subtle);
+    background: var(--llm-bg-raised); flex-shrink: 0;
+}
+.llm-manager-header-title { font-size: 14px; font-weight: 600; }
+
+.llm-manager-body {
+    flex: 1; overflow-y: auto; padding: 14px 18px;
+    display: flex; flex-direction: column; gap: 8px; min-height: 200px;
+}
+
+/* Custom scrollbar for manager body */
+.llm-manager-body::-webkit-scrollbar {
+    width: 4px;
+}
+.llm-manager-body::-webkit-scrollbar-track {
+    background: transparent;
+}
+.llm-manager-body::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 2px;
+    transition: background 0.2s ease;
+}
+.llm-manager-body::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.llm-manager-footer {
+    display: flex; justify-content: flex-end; gap: 8px;
+    padding: 10px 16px; border-top: 1px solid var(--llm-border-subtle);
+    background: var(--llm-bg-raised); flex-shrink: 0;
+}
+
+/* Search input */
+.llm-manager-search {
+    width: 100%; background: var(--llm-bg-input); color: var(--llm-text-primary);
+    border: 1px solid var(--llm-border-default); border-radius: 4px;
+    padding: 8px 10px; font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px; box-sizing: border-box; outline: none;
+}
+.llm-manager-search:focus {
+    border-color: var(--llm-accent-primary);
+    box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.15);
+}
+.llm-manager-search::placeholder { color: var(--llm-text-muted); }
+
+/* Toolbar row */
+.llm-manager-toolbar {
+    display: flex; gap: 6px; align-items: center; flex-shrink: 0;
+}
+.llm-manager-toolbar .llm-manager-search { flex: 1; }
+
+/* Prompt list container */
+.llm-manager-list { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+
+/* Prompt row */
+.llm-manager-prompt-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 10px; background: var(--llm-bg-surface); border-radius: 4px;
+    border: 1px solid var(--llm-border-subtle); transition: border-color 0.1s;
+}
+.llm-manager-prompt-row:hover { border-color: var(--llm-border-strong); }
+.llm-manager-checkbox {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 16px; height: 16px;
+    border: 1px solid #64748b;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.2);
+    cursor: pointer;
+    flex-shrink: 0;
+    position: relative;
+    transition: background 0.15s, border-color 0.15s;
+}
+.llm-manager-checkbox:checked {
+    background: var(--llm-accent-primary);
+    border-color: var(--llm-accent-primary);
+}
+.llm-manager-checkbox:checked::after {
+    content: "✓";
+    color: #fff;
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+
+.llm-manager-prompt-name {
+    flex: 0 0 auto; font-weight: bold; color: var(--llm-text-primary);
+    min-width: 100px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; cursor: default;
+}
+
+.llm-manager-prompt-preview {
+    flex: 1; color: var(--llm-text-secondary); font-size: 11px; cursor: pointer;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    padding: 2px 4px; border-radius: 2px; transition: background 0.1s;
+}
+.llm-manager-prompt-preview:hover { background: var(--llm-bg-hover); }
+.llm-manager-prompt-preview.expanded {
+    white-space: pre-wrap; word-break: break-word;
+    max-height: 200px; overflow-y: auto;
+    background: rgba(20,20,35,0.5);
+}
+
+.llm-manager-badge {
+    color: var(--llm-accent-green); font-size: 10px; flex-shrink: 0;
+    min-width: 50px; text-align: right;
+}
+
+/* Action buttons inside prompt row */
+.llm-manager-row-btns {
+    display: flex; gap: 2px; flex-shrink: 0;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────── */
+
+.llm-manager-btn {
+    background: var(--llm-btn-default-bg); color: var(--llm-text-secondary);
+    border: 1px solid #3a3f4d; border-radius: 6px;
+    padding: 6px 14px; cursor: pointer;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 12px;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+    flex-shrink: 0;
+}
+.llm-manager-btn:hover {
+    color: var(--llm-text-primary);
+    border-color: var(--llm-border-strong);
+    background: var(--llm-btn-default-hover);
+}
+.llm-manager-btn:active { background: #2a2d36; }
+
+.llm-manager-btn-primary {
+    background: rgba(52, 211, 153, 0.15);
+    color: #34d399;
+    border: 1px solid rgba(52, 211, 153, 0.3);
+    padding: 8px;
+    font-weight: 500;
+}
+.llm-manager-btn-primary:hover {
+    background: rgba(52, 211, 153, 0.25);
+    border-color: rgba(52, 211, 153, 0.5);
+    color: #6ee7b7;
+}
+.llm-manager-btn-primary:active {
+    background: rgba(52, 211, 153, 0.35);
+}
+
+.llm-manager-btn-danger {
+    background: rgba(239, 68, 68, 0.12);
+    border-color: transparent;
+    color: #f87171;
+}
+.llm-manager-btn-danger:hover {
+    background: rgba(239, 68, 68, 0.25);
+    color: #fca5a5;
+    border-color: transparent;
+}
+.llm-manager-btn-danger:active {
+    background: rgba(239, 68, 68, 0.35);
+}
+
+.llm-manager-btn-small {
+    padding: 2px 8px; font-size: 11px;
+}
+
+.llm-manager-btn-icon {
+    background: none; border: none; color: var(--llm-accent-primary); cursor: pointer;
+    padding: 2px 4px; font-size: 13px; line-height: 1;
+    transition: color 0.1s;
+}
+.llm-manager-btn-icon:hover { color: #c4b5fd; }
+.llm-manager-btn-icon:disabled { color: #444; cursor: default; }
+
+/* Ghost button for edit action — violet by default to indicate clickability */
+.llm-manager-btn-ghost {
+    background: none;
+    border: none;
+    color: var(--llm-accent-primary);
+    cursor: pointer;
+    padding: 2px 6px;
+    font-size: 13px;
+    line-height: 1;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+}
+.llm-manager-btn-ghost:hover {
+    color: #c4b5fd;
+    background: rgba(167, 139, 250, 0.15);
+}
+
+/* ── Editor form (add/edit prompt) ────────────────────────────────── */
+
+.llm-manager-form { display: flex; flex-direction: column; gap: 10px; flex: 1; }
+
+.llm-manager-label {
+    color: var(--llm-text-primary); font-size: 12px; margin-bottom: 2px;
+}
+
+.llm-manager-input {
+    width: 100%; background: var(--llm-bg-input); color: var(--llm-text-primary);
+    border: 1px solid var(--llm-border-default); border-radius: 4px;
+    padding: 6px 8px; font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px; box-sizing: border-box; outline: none;
+}
+.llm-manager-input:focus { border-color: var(--llm-border-focus); }
+
+.llm-manager-textarea {
+    width: 100%; min-height: 120px; resize: vertical;
+    flex: 1; height: auto;
+    background: var(--llm-bg-input); color: var(--llm-text-primary);
+    border: 1px solid var(--llm-border-default); border-radius: 4px;
+    padding: 8px; font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px; box-sizing: border-box; outline: none;
+}
+.llm-manager-textarea:focus { border-color: var(--llm-border-focus); }
+
+.llm-manager-warning {
+    color: #c8a050; font-size: 11px; display: none;
+}
+
+/* ── Empty state ──────────────────────────────────────────────────── */
+
+.llm-manager-empty {
+    color: var(--llm-text-secondary); text-align: center; padding: 30px 12px;
+    font-size: 12px; font-style: italic;
+}
+
+/* ── Count label ──────────────────────────────────────────────────── */
+
+.llm-manager-count {
+    color: var(--llm-text-secondary); font-size: 11px; flex-shrink: 0;
+}
+
+/* ── Confirm dialog overlay ───────────────────────────────────────── */
+
+.llm-manager-confirm-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7); z-index: 10001;
+    display: flex; align-items: center; justify-content: center;
+}
+
+.llm-manager-confirm-panel {
+    background: var(--llm-bg-surface);
+    border: 1px solid var(--llm-border-default);
+    border-radius: 10px; padding: 20px; min-width: 320px;
+    max-width: 450px; box-shadow: 0 20px 40px rgba(0,0,0,0.65);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px; color: var(--llm-text-primary);
+}
+
+.llm-manager-confirm-title {
+    font-weight: bold; font-size: 15px; margin-bottom: 12px;
+}
+
+.llm-manager-confirm-message {
+    margin-bottom: 16px; line-height: 1.4;
+}
+
+.llm-manager-confirm-btns {
+    display: flex; justify-content: flex-end; gap: 8px;
+}
+
+/* ── Import dialog ────────────────────────────────────────────────── */
+
+.llm-manager-import-preview {
+    background: rgba(20,20,35,0.6); border: 1px solid var(--llm-border-subtle);
+    border-radius: 4px; padding: 8px; max-height: 200px;
+    overflow-y: auto; font-size: 11px; color: var(--llm-text-primary);
+}
+
+.llm-manager-select {
+    background: var(--llm-bg-input); color: var(--llm-text-primary);
+    border: 1px solid var(--llm-border-default); border-radius: 3px;
+    padding: 5px 8px; font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 12px; outline: none;
+}
+.llm-manager-select:focus { border-color: var(--llm-border-focus); }
+
+/* ── Success/error feedback ───────────────────────────────────────── */
+
+.llm-manager-feedback {
+    padding: 8px 12px; border-radius: 4px; font-size: 12px;
+    text-align: center; animation: llm-manager-fade 3s ease forwards;
+}
+.llm-manager-feedback-success {
+    background: rgba(42, 90, 62, 0.3); border: 1px solid var(--llm-btn-primary-hover); color: #8ad8aa;
+}
+.llm-manager-feedback-error {
+    background: rgba(90, 42, 42, 0.3); border: 1px solid var(--llm-btn-danger-hover); color: #d8a0a0;
+}
+
+@keyframes llm-manager-fade {
+    0% { opacity: 1; }
+    70% { opacity: 1; }
+    100% { opacity: 0; }
+}
+
+/* ── File input (hidden) ──────────────────────────────────────────── */
+
+.llm-manager-file-input { display: none; }
+
+/* ========================================================================
+   llm-chat Improvements (Features 2–20)
+   ======================================================================== */
+
+/* ── Toast Notification ──────────────────────────────────────────── */
+
+.llm-toast {
+    position: fixed;
+    top: 30px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 4px 16px;
+    border-radius: 6px;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    line-height: 1.3;
+    color: var(--llm-text-primary);
+    z-index: 99999;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    pointer-events: none;
+    opacity: 1;
+    transition: opacity 0.3s;
+    max-width: 80vw;
+    text-align: center;
+    /* Defensive: prevent ComfyUI global CSS from stretching */
+    box-sizing: border-box;
+    height: auto;
+    min-height: 0;
+    max-height: 38px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    display: block;
+    margin: 0;
+    border: 1px solid var(--llm-border-default);
+    border-left: 3px solid var(--llm-accent-blue);
+    outline: none;
+}
+.llm-toast-info {
+    background: var(--llm-toast-info-bg);
+    border-left-color: var(--llm-accent-blue);
+}
+.llm-toast-success {
+    background: var(--llm-toast-success-bg);
+    border-left-color: var(--llm-accent-green);
+}
+.llm-toast-error {
+    background: var(--llm-toast-error-bg);
+    border-left-color: #ef4444;
+}
+.llm-toast-warning {
+    background: var(--llm-toast-warning-bg);
+    border-left-color: #f59e0b;
+}
+
+/* ── Scroll-to-Bottom Button ──────────────────────────────────────── */
+
+.llm-chat-scroll-bottom-btn {
+    position: sticky;
+    bottom: 8px;
+    float: right;
+    z-index: 10;
+    display: none;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 14px;
+    background: var(--llm-btn-default-bg);
+    color: var(--llm-text-primary);
+    border: 1px solid var(--llm-border-strong);
+    border-radius: 20px;
+    cursor: pointer;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    transition: background 0.15s, opacity 0.2s;
+    opacity: 0;
+    pointer-events: none;
+}
+.llm-chat-scroll-bottom-btn.llm-scroll-bottom-visible {
+    display: flex;
+    opacity: 1;
+    pointer-events: auto;
+}
+.llm-chat-scroll-bottom-btn:hover {
+    background: var(--llm-btn-default-hover);
+}
+.llm-chat-scroll-badge {
+    display: none;
+    background: var(--llm-accent-user);
+    color: #fff;
+    font-size: 10px;
+    min-width: 16px;
+    height: 16px;
+    border-radius: 10px;
+    text-align: center;
+    line-height: 16px;
+    padding: 0 4px;
+}
+.llm-chat-scroll-badge:not(:empty) {
+    display: inline-block;
+}
+
+/* ── Thinking Blocks (collapsible reasoning) ──────────────────────── */
+
+.llm-chat-thinking {
+    margin: 6px 0;
+    background: #111318;
+    border: 1px solid var(--llm-border-default);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.llm-chat-thinking-summary {
+    padding: 4px 8px;
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--llm-text-secondary);
+    user-select: none;
+}
+.llm-chat-thinking-summary:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+.llm-chat-thinking-content {
+    padding: 4px 8px 8px;
+    font-size: 11px;
+    color: var(--llm-text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    border-top: 1px solid var(--llm-border-subtle);
+    /* No max-height or overflow — content expands fully inside parent scroll */
+}
+
+/* ── System Prompt Details (collapsible, in enhancer history) ────── */
+
+.llm-chat-system-prompt-details {
+    margin-top: 6px;
+    font-size: 11px;
+}
+.llm-chat-system-prompt-summary {
+    cursor: pointer;
+    color: var(--llm-text-muted);
+    font-size: 11px;
+    user-select: none;
+    padding: 2px 0;
+}
+.llm-chat-system-prompt-summary:hover {
+    color: var(--llm-text-secondary);
+}
+.llm-chat-system-prompt-content {
+    margin-top: 4px;
+    padding: 6px 8px;
+    background: var(--llm-bg-hover);
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--llm-text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+/* ── Bubble Timestamp ─────────────────────────────────────────────── */
+
+.llm-chat-bubble-timestamp {
+    font-size: 10px;
+    color: var(--llm-text-muted);
+    margin-top: 2px;
+    opacity: 0.7;
+}
+
+/* ── Bubble Action Buttons (copy / edit / delete) ─────────────────── */
+
+.llm-chat-bubble-actions {
+    display: flex;
+    gap: 2px;
+    margin-top: 4px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.llm-chat-bubble:hover .llm-chat-bubble-actions {
+    opacity: 1;
+}
+.llm-chat-action-btn {
+    background: none;
+    border: none;
+    color: var(--llm-btn-ghost-color);
+    cursor: pointer;
+    padding: 2px 4px;
+    font-size: 13px;
+    line-height: 1;
+    border-radius: 3px;
+    transition: background 0.1s, color 0.1s;
+}
+.llm-chat-action-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--llm-btn-ghost-hover);
+}
+
+/* ── Timing Badge ─────────────────────────────────────────────────── */
+
+.llm-chat-timing-badge {
+    font-size: 10px;
+    color: #94a3b8;
+    margin-top: 2px;
+    opacity: 0.8;
+    cursor: help;
+}
+
+/* ── Error State ──────────────────────────────────────────────────── */
+
+.llm-chat-bubble-error {
+    background: rgba(200, 74, 74, 0.08) !important;
+    border: 1px solid rgba(200, 74, 74, 0.2) !important;
+    border-radius: 4px !important;
+}
+.llm-chat-bubble-error-icon {
+    font-size: 12px;
+    margin-right: 4px;
+    opacity: 0.7;
+}
+
+/* ── Typing Indicator ─────────────────────────────────────────────── */
+
+.llm-chat-typing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--llm-accent-green);
+    background: var(--llm-bg-card);
+    border-left: none;
+    border-radius: 4px;
+    margin-bottom: 6px;
+}
+.llm-chat-typing-dots {
+    display: inline-block;
+    animation: llm-typing-blink 1.2s steps(3, end) infinite;
+}
+
+@keyframes llm-typing-blink {
+    0% { opacity: 1; }
+    33% { opacity: 0.5; }
+    66% { opacity: 0.2; }
+    100% { opacity: 1; }
+}
+
+/* ── Context Window Indicator ─────────────────────────────────────── */
+
+.llm-chat-context-indicator {
+    font-size: 10px;
+    color: #94a3b8;
+    text-align: center;
+    padding: 2px 8px;
+    opacity: 0.8;
+    flex-shrink: 0;
+}
+.llm-chat-context-indicator.llm-context-warning {
+    color: #d8a050;
+    opacity: 1;
+}
+.llm-chat-context-indicator.llm-context-critical {
+    color: var(--llm-btn-danger-hover);
+    opacity: 1;
+}
+
+/* ── Header Action Buttons (Clear / Export / Stop) ───────────────── */
+
+.llm-popup-header-actions {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    flex-shrink: 0;
+}
+.llm-popup-header-btn {
+    background: var(--llm-btn-default-bg);
+    color: var(--llm-text-secondary);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 11px;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+    white-space: nowrap;
+}
+.llm-popup-header-btn:hover {
+    color: var(--llm-text-primary);
+    border-color: var(--llm-border-strong);
+    background: var(--llm-btn-default-hover);
+}
+
+/* ── Camera badge in popup header (multimodal image connected) ────── */
+
+.llm-popup-camera-badge {
+    display: none;
+    font-size: 16px;
+    cursor: default;
+    margin-right: 8px;
+    vertical-align: middle;
+    line-height: 1;
+    opacity: 0.9;
+}
+.llm-popup-stop-btn {
+    background: var(--llm-btn-default-bg);
+    border-color: var(--llm-border-subtle);
+}
+.llm-popup-stop-btn:hover {
+    color: #f87171 !important;
+    border-color: #ef4444 !important;
+    background: var(--llm-btn-danger-hover) !important;
+}
+
+/* ── Export Button ────────────────────────────────────────────────── */
+
+.llm-popup-export-btn {
+    position: relative;
+}
+
+/* ── Export Dropdown ──────────────────────────────────────────────── */
+
+.llm-popup-export-dropdown {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    background: var(--llm-bg-raised);
+    border: 1px solid var(--llm-border-strong);
+    border-radius: 4px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    z-index: 100;
+    min-width: 140px;
+    overflow: hidden;
+}
+
+/* Export button in footer — dropdown opens upward to avoid clipping */
+.llm-popup-export-btn--footer .llm-popup-export-dropdown {
+    top: auto;
+    bottom: 100%;
+}
+.llm-popup-export-dropdown button {
+    display: block;
+    width: 100%;
+    padding: 8px 14px;
+    background: none;
+    border: none;
+    color: var(--llm-text-primary);
+    font-family: monospace;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+.llm-popup-export-dropdown button:hover {
+    background: var(--llm-bg-hover);
+}
+
+/* ── Code Blocks (markdown rendering) ─────────────────────────────── */
+
+.llm-chat-bubble-text pre {
+    background: var(--llm-bg-base);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 4px;
+    padding: 8px 10px;
+    margin: 6px 0;
+    overflow-x: auto;
+    font-family: monospace;
+    font-size: 12px;
+    line-height: 1.4;
+}
+.llm-chat-bubble-text code {
+    background: var(--llm-bg-surface);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 12px;
+    color: var(--llm-text-secondary);
+}
+.llm-chat-bubble-text pre code {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    font-size: 12px;
+    color: var(--llm-text-primary);
+}
+.llm-chat-bubble-text a {
+    color: var(--llm-accent-blue);
+    text-decoration: underline;
+}
+.llm-chat-bubble-text a:hover {
+    color: #8bbaff;
+}
+
+/* ── Bubble Hover/Transition Polish ───────────────────────────────── */
+
+.llm-chat-bubble {
+    transition: background 0.15s;
+}
+.llm-chat-bubble-user:hover {
+    background: rgba(30, 34, 43, 0.8);
+}
+.llm-chat-bubble-assistant:hover {
+    background: var(--llm-bg-hover);
+}
+
+/* ── Text Selectability (allow user text selection everywhere) ────── */
+
+.llm-popup-history {
+    user-select: text;
+    -webkit-user-select: text;
+}
+.llm-popup-body {
+    user-select: text;
+    -webkit-user-select: text;
+}
+.llm-chat-bubble-text {
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+/* ── Resizable Popup Panel ────────────────────────────────────────── */
+
+.llm-popup-panel {
+    resize: both;
+    overflow: hidden;
+    min-width: 400px;
+    min-height: 300px;
+    box-sizing: border-box;
+}
+.llm-popup-panel::-webkit-resizer {
+    background: linear-gradient(135deg, transparent 50%, var(--llm-border-default) 50%);
+    border-radius: 0 0 8px 0;
+    width: 14px;
+    height: 14px;
+}
+
+/* ── Mode Pill (canvas button area) ──────────────────────────────── */
+
+.llm-mode-pill {
+    font-size: 14px;
+    cursor: help;
+    flex-shrink: 0;
+    padding: 0 2px;
+    opacity: 0.8;
+    transition: opacity 0.15s;
+    line-height: 1;
+}
+.llm-mode-pill:hover {
+    opacity: 1;
+}
+
+/* ── Streaming Animation ──────────────────────────────────────────── */
+
+@keyframes llm-stream-pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.6; }
+    100% { opacity: 1; }
+}
+.llm-chat-bubble.llm-chat-streaming .llm-chat-bubble-text::after {
+    content: "▊";
+    display: inline-block;
+    animation: llm-stream-pulse 0.8s ease-in-out infinite;
+    color: var(--llm-accent-green);
+    margin-left: 2px;
+}
+
+/* ── GGUF Model Browser Popup ───────────────────────────────────── */
+.llm-model-browser-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    color: var(--llm-text-primary);
+}
+
+.llm-model-browser-panel {
+    background: var(--llm-bg-surface);
+    border: 1px solid var(--llm-border-default);
+    border-radius: 10px;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.65);
+    width: 620px;
+    max-width: 90vw;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    color: var(--llm-text-primary);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    resize: both;
+    overflow: hidden;
+    min-width: 420px;
+    min-height: 300px;
+}
+
+.llm-model-browser-panel::-webkit-resizer {
+    background: linear-gradient(135deg, transparent 50%, var(--llm-border-default) 50%);
+    border-radius: 0 0 8px 0;
+    width: 14px;
+    height: 14px;
+}
+
+.llm-model-browser-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--llm-border-subtle);
+    background: var(--llm-bg-raised);
+    border-radius: 10px 10px 0 0;
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--llm-text-primary);
+}
+
+.llm-model-browser-close-btn {
+    background: rgba(239, 68, 68, 0.15);
+    border: none;
+    color: #f87171;
+    font-size: 14px;
+    cursor: pointer;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    transition: background 0.15s, color 0.15s;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+.llm-model-browser-close-btn:hover {
+    background: rgba(239, 68, 68, 0.35);
+    color: #fca5a5;
+}
+
+.llm-model-browser-body {
+    flex: 1;
+    overflow: hidden;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Custom scrollbar for model browser body */
+.llm-model-browser-body::-webkit-scrollbar {
+    width: 4px;
+}
+.llm-model-browser-body::-webkit-scrollbar-track {
+    background: transparent;
+}
+.llm-model-browser-body::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 2px;
+    transition: background 0.2s ease;
+}
+.llm-model-browser-body::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.llm-model-browser-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 16px;
+    border-top: 1px solid var(--llm-border-subtle);
+    background: var(--llm-bg-raised);
+    border-radius: 0 0 10px 10px;
+}
+
+.llm-model-browser-footer-left {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.llm-model-browser-footer-right {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+/* ── Recent models radio list ────────────────────────────────────── */
+#llm-model-browser-recent label:hover {
+    background: var(--llm-bg-hover);
+    border-radius: 3px;
+}
+#llm-model-browser-recent input[type="radio"] {
+    accent-color: var(--llm-accent-primary);
+    vertical-align: middle;
+}
+
+/* ── Section dividers ──────────────────────────────────────────────── */
+.llm-model-section-divider {
+    font-size: 11px;
+    color: var(--llm-text-secondary);
+    margin: 10px 0 4px;
+    padding: 0;
+    user-select: none;
+}
+
+/* ── Searchable dropdown (combobox) ────────────────────────────────── */
+.llm-model-search-container {
+    position: relative;
+    width: 100%;
+}
+
+.llm-model-search-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding-right: 24px;
+}
+
+.llm-model-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    max-height: 300px;
+    overflow-y: auto;
+    background: var(--llm-bg-surface);
+    border: 1px solid var(--llm-border-default);
+    border-top: none;
+    border-radius: 0 0 4px 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.llm-model-dropdown-item {
+    padding: 6px 10px;
+    font-size: 12px;
+    color: var(--llm-text-primary);
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: background 0.1s;
+}
+
+.llm-model-dropdown-item:hover,
+.llm-model-dropdown-item.selected {
+    background: var(--llm-btn-default-bg);
+    color: var(--llm-text-primary);
+}
+
+/* ── Architecture pill badge (model browser dropdown) ─────────────── */
+.llm-arch-pill {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--llm-accent-primary-bg);
+    color: var(--llm-accent-primary);
+    margin-right: 5px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    vertical-align: middle;
+    line-height: 1.4;
+}
+.llm-arch-pill:hover {
+    background: var(--llm-btn-default-bg);
+}
+
+/* ── Image attachment button (popup input row) ────────────────────── */
+.llm-popup-attach-btn {
+    background: none;
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+    color: var(--llm-text-muted);
+    cursor: pointer;
+    font-size: 16px;
+    padding: 4px 8px;
+    margin-right: 4px;
+    flex-shrink: 0;
+    align-self: flex-end;
+    height: 30px;
+    line-height: 1;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.llm-popup-attach-btn:hover {
+    background: var(--llm-btn-default-bg);
+    border-color: var(--llm-border-strong);
+    color: var(--llm-text-primary);
+}
+
+/* ── Image preview container (above input row) ───────────────────── */
+.llm-popup-image-preview {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: var(--llm-bg-surface);
+    border-bottom: 1px solid var(--llm-border-default);
+}
+.llm-popup-image-preview img {
+    max-width: 80px;
+    max-height: 60px;
+    border-radius: 4px;
+    object-fit: cover;
+    border: 1px solid var(--llm-border-default);
+}
+
+/* ── Image remove button (✕) ────────────────────────────────────── */
+.llm-popup-image-remove-btn {
+    background: none;
+    border: none;
+    color: var(--llm-accent-green);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 6px;
+    line-height: 1;
+    border-radius: 3px;
+    transition: background 0.15s;
+}
+.llm-popup-image-remove-btn:hover {
+    background: var(--llm-btn-danger-bg);
+}
+
+.llm-model-dropdown-empty {
+    padding: 10px;
+    font-size: 11px;
+    color: var(--llm-text-muted);
+    text-align: center;
+    font-style: italic;
+}
+/* ── Warning label ─────────────────────────────────────────────────── */
+.llm-model-warning {
+    font-size: 11px;
+    color: #d8a050;
+    margin-top: 4px;
+    margin-bottom: 2px;
+    line-height: 1.4;
+}
+
+/* ── Spinner for model browser loading state ─────────────────────── */
+.llm-spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--llm-border-default);
+    border-top-color: var(--llm-accent-primary);
+    border-radius: 50%;
+    animation: llm-spin 0.8s linear infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+}
+
+@keyframes llm-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ── Cache freshness label ────────────────────────────────────────── */
+#llm-model-cache-label {
+    font-size: 11px;
+    color: var(--llm-text-muted);
+    user-select: none;
+}
+
+/* ── Model metadata line (compact info below card list) ──────────────── */
+.llm-model-info-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+    padding: 8px 12px;
+    font-size: 11px;
+    color: var(--llm-text-secondary);
+    line-height: 1.5;
+    animation: llm-info-fadein 0.15s ease;
+    background: var(--llm-bg-base);
+    border-radius: 4px;
+    border: 1px solid var(--llm-border-subtle);
+}
+
+@keyframes llm-info-fadein {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+.llm-model-info-text {
+    overflow-wrap: break-word;
+    word-break: break-word;
+}
+
+/* ── Info panel path row (path text + copy button) ─────────────────── */
+.llm-model-info-path-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.llm-model-info-path-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    word-break: break-all;
+}
+
+.llm-model-info-copy-btn {
+    flex-shrink: 0;
+    background: var(--llm-btn-default-bg);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 4px;
+    color: var(--llm-text-secondary);
+    cursor: pointer;
+    font-size: 10px;
+    padding: 2px 6px;
+    font-family: inherit;
+    line-height: 1.4;
+    white-space: nowrap;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.llm-model-info-copy-btn:hover {
+    color: var(--llm-text-primary);
+    border-color: var(--llm-border-strong);
+    background: var(--llm-btn-default-hover);
+}
+
+/* ── Info panel badges row (source + quant + separators) ──────────── */
+.llm-model-info-badges {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.llm-model-info-sep {
+    color: var(--llm-border-default);
+    user-select: none;
+    font-size: 10px;
+}
+
+/* ── Generic pill badge (reused by info panel badges) ────────────────── */
+.llm-pill {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--llm-accent-primary-bg);
+    color: var(--llm-accent-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    vertical-align: middle;
+    line-height: 1.4;
+}
+
+.llm-pill-mmproj {
+    background: rgba(60, 170, 100, 0.2);
+    color: var(--llm-accent-green);
+}
+
+.llm-pill-size {
+    background: var(--llm-btn-default-bg);
+    color: var(--llm-text-secondary);
+}
+
+/* ════════════════════════════════════════════════
+   Model Browser: Card List + Filter/Sort + Settings
+   ════════════════════════════════════════════════ */
+
+/* ── Search bar wrapper with clear button ── */
+.llm-model-search-wrapper {
+    position: relative;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    background: var(--llm-bg-card);
+    border: 1px solid var(--llm-border-strong);
+    border-radius: 8px;
+    padding: 0 8px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.llm-model-search-wrapper:focus-within {
+    border-color: var(--llm-accent-primary);
+    box-shadow: 0 0 0 1px var(--llm-accent-primary);
+}
+
+.llm-model-search-wrapper input {
+    flex: 1;
+    background: transparent;
+    color: var(--llm-text-primary);
+    border: none;
+    outline: none;
+    padding: 8px 4px;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    box-sizing: border-box;
+}
+.llm-model-search-wrapper input::placeholder {
+    color: var(--llm-text-muted);
+}
+
+.llm-model-search-clear {
+    font-size: 13px;
+    color: var(--llm-text-muted);
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+    border: none;
+    background: none;
+    display: none;
+    user-select: none;
+    font-family: inherit;
+    flex-shrink: 0;
+}
+.llm-model-search-clear:hover {
+    color: var(--llm-text-secondary);
+}
+.llm-model-search-clear.visible {
+    display: inline;
+}
+
+/* ── Filter + Sort bar ── */
+.llm-model-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+    padding: 6px 8px;
+    background: var(--llm-bg-base);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+}
+
+.llm-model-filter-group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.llm-model-filter-label {
+    font-size: 11px;
+    color: var(--llm-text-muted);
+    margin-right: 2px;
+    user-select: none;
+    white-space: nowrap;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.llm-model-filter-btn {
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--llm-text-muted);
+    transition: background 0.1s, color 0.1s, border-color 0.1s;
+    user-select: none;
+    white-space: nowrap;
+    font-family: inherit;
+    font-weight: 500;
+}
+.llm-model-filter-btn:hover {
+    background: var(--llm-bg-hover);
+    color: var(--llm-text-secondary);
+    border-color: var(--llm-border-subtle);
+}
+.llm-model-filter-btn.active {
+    background: var(--llm-accent-primary-bg);
+    border-color: var(--llm-accent-primary);
+    color: var(--llm-accent-primary);
+}
+
+.llm-model-sort-btn {
+    padding: 2px 6px;
+    font-size: 11px;
+    cursor: pointer;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--llm-text-muted);
+    transition: background 0.1s, color 0.1s;
+    user-select: none;
+    font-family: inherit;
+    font-weight: 500;
+}
+.llm-model-sort-btn:hover {
+    background: var(--llm-bg-hover);
+    color: var(--llm-text-secondary);
+}
+.llm-model-sort-btn.active {
+    color: var(--llm-accent-primary);
+    background: var(--llm-accent-primary-bg);
+}
+
+/* ── Separator between filter and sort groups ── */
+.llm-model-filter-sep {
+    width: 1px;
+    height: 14px;
+    background: var(--llm-border-subtle);
+    margin: 0 4px;
+    flex-shrink: 0;
+}
+
+/* ── Card list (scrollable) ── */
+.llm-model-card-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1;
+    min-height: 60px;
+    overflow-y: auto;
+    margin-top: 8px;
+    border: 1px solid var(--llm-border-default);
+    border-radius: 6px;
+    padding: 4px;
+    background: var(--llm-bg-base);
+}
+
+/* Custom scrollbar for card list */
+.llm-model-card-list::-webkit-scrollbar {
+    width: 4px;
+}
+.llm-model-card-list::-webkit-scrollbar-track {
+    background: transparent;
+}
+.llm-model-card-list::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 2px;
+    transition: background 0.2s ease;
+}
+.llm-model-card-list::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.llm-model-card-list:empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.llm-model-card-list-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--llm-text-muted);
+    padding: 20px 0;
+}
+
+.llm-model-card-list-empty {
+    font-size: 11px;
+    color: var(--llm-text-muted);
+    text-align: center;
+    font-style: italic;
+    padding: 20px 0;
+}
+
+/* ── Individual model card ── */
+.llm-model-card {
+    display: flex;
+    flex-direction: column;
+    padding: 6px 10px;
+    background: var(--llm-bg-base);
+    border: 1px solid var(--llm-border-default);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+}
+.llm-model-card:hover {
+    background: var(--llm-bg-hover);
+    border-color: var(--llm-border-strong);
+}
+.llm-model-card.selected {
+    border-color: var(--llm-accent-primary);
+    background: var(--llm-accent-primary-bg);
+    box-shadow: inset 0 0 0 1px var(--llm-accent-primary);
+}
+
+.llm-model-card-name {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--llm-text-primary);
+    word-break: break-all;
+    margin-bottom: 3px;
+    line-height: 1.3;
+}
+
+.llm-model-card-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+}
+
+/* ── Foldable settings panel ── */
+.llm-model-settings-panel {
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+    padding: 8px 10px;
+    background: var(--llm-bg-raised);
+    margin-top: 8px;
+    transition: border-color 0.15s;
+}
+.llm-model-settings-panel:hover {
+    border-color: var(--llm-border-strong);
+}
+
+.llm-model-settings-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--llm-text-secondary);
+    padding: 3px 0;
+    user-select: none;
+    border: none;
+    background: none;
+    font-family: inherit;
+    font-weight: 500;
+    transition: color 0.15s;
+}
+.llm-model-settings-toggle:hover {
+    color: var(--llm-accent-primary);
+}
+
+.llm-model-settings-content {
+    display: none;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--llm-border-subtle);
+}
+
+.llm-model-settings-expanded .llm-model-settings-content {
+    display: block;
+}
+
+/* ── Refresh button + cache label row ── */
+.llm-model-cache-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    padding: 4px 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Model Browser — Button & Utility Classes (replaces inline styles)
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Default button ── */
+.llm-model-browser-btn {
+    padding: 2px 8px;
+    font-size: 10px;
+    cursor: pointer;
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+    background: var(--llm-btn-default-bg);
+    color: var(--llm-text-secondary);
+    white-space: nowrap;
+    flex-shrink: 0;
+    font-family: inherit;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.llm-model-browser-btn:hover {
+    background: var(--llm-btn-default-hover);
+    border-color: var(--llm-border-strong);
+    color: var(--llm-text-primary);
+}
+.llm-model-browser-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* ── Primary (accent) button — e.g. "Add", "Apply" ── */
+.llm-model-browser-btn-primary {
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+    background: var(--llm-btn-default-bg);
+    color: var(--llm-text-primary);
+    font-weight: 500;
+    white-space: nowrap;
+    font-family: inherit;
+    box-shadow: var(--llm-btn-primary-glow);
+    transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+}
+.llm-model-browser-btn-primary:hover {
+    background: var(--llm-btn-default-hover);
+    border-color: var(--llm-accent-primary);
+    box-shadow: var(--llm-accent-primary-glow);
+}
+.llm-model-browser-btn-primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* ── Danger/Reset button ── */
+.llm-model-browser-btn-danger {
+    padding: 4px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    border: 1px solid rgba(239, 68, 68, 0.25);
+    border-radius: 6px;
+    background: transparent;
+    color: rgba(239, 68, 68, 0.85);
+    font-family: inherit;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.llm-model-browser-btn-danger:hover {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: #ef4444;
+    color: #f87171;
+}
+
+/* ── Ghost/Icon button (transparent bg, colored text) ── */
+.llm-model-browser-btn-ghost {
+    padding: 4px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    border: 1px solid var(--llm-border-default);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--llm-text-secondary);
+    font-family: inherit;
+    transition: background 0.15s, color 0.15s;
+}
+.llm-model-browser-btn-ghost:hover {
+    background: var(--llm-accent-primary-bg);
+    color: var(--llm-accent-primary);
+}
+
+/* ── Small danger ghost button (e.g. "× Clear All", "✕" remove) ── */
+.llm-model-browser-btn-danger-sm {
+    padding: 0 6px;
+    font-size: 10px;
+    cursor: pointer;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: #ef4444;
+    font-family: inherit;
+    transition: background 0.15s;
+}
+.llm-model-browser-btn-danger-sm:hover {
+    background: var(--llm-btn-danger-bg);
+    color: #f87171;
+}
+
+/* ── Toggle/exclude button (tiny icon button) ── */
+.llm-model-browser-btn-icon {
+    padding: 0 2px;
+    font-size: 10px;
+    cursor: pointer;
+    border: none;
+    border-radius: 2px;
+    background: transparent;
+    line-height: 1;
+    font-family: inherit;
+    transition: background 0.15s;
+}
+.llm-model-browser-btn-icon:hover {
+    background: var(--llm-btn-default-bg);
+}
+
+/* ── Cancel button (larger, for footer) ── */
+.llm-model-browser-btn-cancel {
+    padding: 4px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+    background: var(--llm-btn-default-bg);
+    color: var(--llm-text-secondary);
+    font-family: inherit;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.llm-model-browser-btn-cancel:hover {
+    background: var(--llm-btn-default-hover);
+    border-color: var(--llm-border-strong);
+    color: var(--llm-text-primary);
+}
+
+/* ── Apply button (larger, for footer) — matches llm-popup-save-btn style ── */
+.llm-model-browser-btn-apply {
+    background: rgba(52, 211, 153, 0.15);
+    color: #34d399;
+    border: 1px solid rgba(52, 211, 153, 0.3);
+    border-radius: 6px;
+    padding: 6px 20px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+    margin-left: 8px;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.llm-model-browser-btn-apply:hover {
+    background: rgba(52, 211, 153, 0.25);
+    border-color: var(--llm-accent-primary);
+    color: #6ee7b7;
+}
+.llm-model-browser-btn-apply:active {
+    background: rgba(52, 211, 153, 0.35);
+}
+
+/* ── Section label (e.g. "Custom Model Folders:", mmproj label) ── */
+.llm-model-browser-section-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--llm-text-primary);
+    margin-top: 10px;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    letter-spacing: 0.3px;
+}
+
+/* ── Hint text (small, italic, muted) ── */
+.llm-model-browser-hint {
+    font-size: 11px;
+    color: var(--llm-text-secondary);
+    margin-top: 4px;
+    font-style: italic;
+    line-height: 1.4;
+    padding: 2px 0;
+}
+
+/* ── Flex row helper ── */
+.llm-model-browser-row {
+    display: flex;
+    flex-direction: row;
+    gap: 4px;
+    align-items: center;
+}
+
+/* ── Directory list item row ── */
+.llm-model-browser-dir-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 0;
+    font-size: 11px;
+}
+
+/* ── Directory label (flex-grow with ellipsis) ── */
+.llm-model-browser-dir-label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--llm-accent-primary);
+}
+
+/* ── Directory label (excluded state) ── */
+.llm-model-browser-dir-label-excluded {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--llm-text-muted);
+    text-decoration: line-through;
+}
+
+/* ── Empty state text ── */
+.llm-model-browser-empty-text {
+    font-size: 11px;
+    color: var(--llm-text-secondary);
+    padding: 4px 0;
+}
+
+/* ── Error state text ── */
+.llm-model-browser-error-text {
+    font-size: 11px;
+    color: var(--llm-btn-danger-bg);
+    padding: 4px 0;
+}
+
+/* ── Directory toggle header ── */
+.llm-model-browser-dir-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--llm-text-primary);
+    padding: 6px 0 4px 0;
+    user-select: none;
+    transition: color 0.15s;
+    border-radius: 3px;
+    letter-spacing: 0.3px;
+}
+.llm-model-browser-dir-toggle:hover {
+    color: var(--llm-accent-primary);
+}
+
+/* ── Directory container (collapsible list) ── */
+.llm-model-browser-dir-container {
+    display: none;
+    margin-top: 4px;
+    max-height: 150px;
+    overflow-y: auto;
+    border: 1px solid var(--llm-border-default);
+    border-radius: 4px;
+    padding: 4px;
+    background: var(--llm-bg-base);
+}
+
+/* ── Expand icon ── */
+.llm-model-browser-expand-icon {
+    font-size: 8px;
+    transition: transform 0.15s;
+}
+
+/* ── Dir list container ── */
+.llm-model-browser-dir-list {
+    margin-top: 6px;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+/* ── Dot bullet ── */
+.llm-model-browser-dot {
+    color: var(--llm-accent-primary);
+    margin-right: 4px;
+}
+
+/* ── Custom dir badge ── */
+.llm-model-browser-custom-badge {
+    font-size: 10px;
+    margin-left: 2px;
+}
+
