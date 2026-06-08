@@ -8,7 +8,7 @@
 # 🚀 AUTOMATIC INSTALLATION (RECOMMENDED)
 # ----------------------------------------------------------------------
 # The install.py script handles everything:
-#   python custom_nodes\llm-chat\install.py
+#   python custom_nodes\ComfyUI-EasyLLM\install.py
 #
 # It auto-detects:
 #   - Your ComfyUI Python (including Windows Portable's embedded Python)

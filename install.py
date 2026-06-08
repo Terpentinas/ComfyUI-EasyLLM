@@ -919,12 +919,15 @@ def install_llama_cpp(
     backend: str,
     force: bool = False,
     try_latest: bool = False,
+    version: str | None = None,
 ) -> bool:
     """Install llama-cpp-python with the matching pre-built wheel.
 
     Version selection: defaults to SAFE_BASELINE_VERSION for all users;
     pass try_latest=True to install LATEST_VERSION (experimental, for
     testing future releases before they become the safe baseline).
+    Pass an explicit version string to override all version logic
+    (used by the recovery menu for version fallback).
 
     On failure, falls through the backend fallback chain, then tries
     SAFE_BASELINE_VERSION from PyPI as a final alternative source.
@@ -934,6 +937,7 @@ def install_llama_cpp(
         backend: Backend key (e.g., 'cu124', 'cpu', 'metal')
         force: If True, skip version check and always reinstall
         try_latest: If True, install LATEST_VERSION instead of SAFE_BASELINE_VERSION
+        version: Explicit version override (e.g. '0.3.23') for recovery fallback
 
     Returns:
         True if installation succeeded, False otherwise
@@ -943,44 +947,56 @@ def install_llama_cpp(
         print(f"  {PREFIX} [FAIL] Unknown backend: {backend}")
         return False
 
-    # ── CPU-aware version selection ────────────────────────────────────
-    cpu_severity = check_cpu_compatibility()
-    is_old_cpu = cpu_severity == CPUSeverity.INCOMPATIBLE
+    # ── Version selection ──────────────────────────────────────────────
+    if version:
+        # User-specified version override (e.g., from recovery menu)
+        package_spec = f'llama-cpp-python=={version}'
+        print(f"  {PREFIX} [INFO] Using specified version: {version}")
+        # Skip CPU compatibility check — user explicitly chose this
+    else:
+        cpu_severity = check_cpu_compatibility()
+        is_old_cpu = cpu_severity == CPUSeverity.INCOMPATIBLE
 
-    if is_old_cpu and not try_latest:
-        # Old CPU, no --try-latest → install safe baseline via PyPI for
-        # best compatibility with non-AVX2 CPUs.
-        print()
-        print(f"  {PREFIX} [INFO] Detected older CPU profile (no AVX2).")
-        print(f"  {PREFIX} [INFO] Installing v{SAFE_BASELINE_VERSION} — the CPU-only "
-              "fallback wheel in this version")
-        print(f"  {PREFIX} [INFO] works without AVX2. Installing via PyPI for best "
-              "compatibility...")
-        print()
-        safe_success = install_safe_baseline(python_path, force=force, backend=backend)
-        if safe_success:
-            return True
-        # Safe baseline failed — fall through to abetlen index path
-        print()
-        print(f"  {PREFIX} [INFO] PyPI install failed (network issue?). "
-              "Falling back to abetlen wheel index...")
-        print()
+        if is_old_cpu and not try_latest:
+            # Old CPU, no --try-latest → install safe baseline via PyPI for
+            # best compatibility with non-AVX2 CPUs.
+            print()
+            print(f"  {PREFIX} [INFO] Detected older CPU profile (no AVX2).")
+            print(f"  {PREFIX} [INFO] Installing v{SAFE_BASELINE_VERSION} — the CPU-only "
+                  "fallback wheel in this version")
+            print(f"  {PREFIX} [INFO] works without AVX2. Installing via PyPI for best "
+                  "compatibility...")
+            print()
+            safe_success = install_safe_baseline(python_path, force=force, backend=backend)
+            if safe_success:
+                return True
+            # Safe baseline failed — fall through to abetlen index path
+            print()
+            print(f"  {PREFIX} [INFO] PyPI install failed (network issue?). "
+                  "Falling back to abetlen wheel index...")
+            print()
 
-    if is_old_cpu and try_latest:
-        # Old CPU + --try-latest → experimental mode (LATEST_VERSION may
-        # differ from SAFE_BASELINE_VERSION in future releases).
-        print()
-        print(f"  {PREFIX} [INFO] --try-latest: installing v{LATEST_VERSION} "
-              "(experimental mode)")
-        if LATEST_VERSION != SAFE_BASELINE_VERSION:
-            print(f"  {PREFIX} [INFO] This is ahead of the safe baseline "
-                  f"v{SAFE_BASELINE_VERSION}. If it crashes at model load,")
-            print(f"  {PREFIX} [INFO] re-run without --try-latest to get the "
-                  f"stable safe baseline.")
+        if is_old_cpu and try_latest:
+            # Old CPU + --try-latest → experimental mode (LATEST_VERSION may
+            # differ from SAFE_BASELINE_VERSION in future releases).
+            print()
+            print(f"  {PREFIX} [INFO] --try-latest: installing v{LATEST_VERSION} "
+                  "(experimental mode)")
+            if LATEST_VERSION != SAFE_BASELINE_VERSION:
+                print(f"  {PREFIX} [INFO] This is ahead of the safe baseline "
+                      f"v{SAFE_BASELINE_VERSION}. If it crashes at model load,")
+                print(f"  {PREFIX} [INFO] re-run without --try-latest to get the "
+                      f"stable safe baseline.")
+            else:
+                print(f"  {PREFIX} [INFO] (Currently matches safe baseline v{SAFE_BASELINE_VERSION} — "
+                      "no behavioral change.)")
+            print()
+
+        # ── Determine package_spec from version policy ────────────────────
+        if is_old_cpu and not try_latest:
+            package_spec = f'llama-cpp-python=={SAFE_BASELINE_VERSION}'
         else:
-            print(f"  {PREFIX} [INFO] (Currently matches safe baseline v{SAFE_BASELINE_VERSION} — "
-                  "no behavioral change.)")
-        print()
+            package_spec = 'llama-cpp-python'
 
     # ── Set CMAKE_ARGS fallback for source builds ────────────────────
     # Ensures pip's source-build fallback uses the correct accelerator
@@ -1064,11 +1080,13 @@ def install_llama_cpp(
         '--prefer-binary',
         '--no-cache-dir',
         '--default-timeout', '300',
-        'llama-cpp-python',
+        package_spec,
         '--extra-index-url', index_url,
     ]
-    if current_version is not None:
-        upgrade_idx = cmd.index('llama-cpp-python')
+    if current_version is not None and package_spec == 'llama-cpp-python':
+        # Only add --upgrade for unversioned specs; version-pinned installs
+        # implicitly handle the upgrade via --force-reinstall
+        upgrade_idx = cmd.index(package_spec)
         cmd.insert(upgrade_idx, '--upgrade')
 
     if is_manager_mode():
@@ -1223,11 +1241,18 @@ def _run_install(cmd: list[str], show_progress: bool = False) -> bool:
     Returns:
         True if installation succeeded, False otherwise.
     """
+    # Extract python_path from the command (first element)
+    python_path = cmd[0] if cmd else sys.executable
+
     if show_progress:
         print(f"\n  +- Installation Command ----------------------------------------------")
         print(f"  | {' '.join(cmd)}")
         print(f"  +-----------------------------------------------------------------------")
         print(f"  {PREFIX} Installing... (this may take 5-15 minutes depending on your system and internet)", end='', flush=True)
+
+    stdout = ""
+    stderr = ""
+    return_code = -1
 
     if show_progress:
         process = subprocess.Popen(
@@ -1267,6 +1292,7 @@ def _run_install(cmd: list[str], show_progress: bool = False) -> bool:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
             return_code = result.returncode
             stderr = result.stderr
+            stdout = result.stdout
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
             print(f"\n  {PREFIX} [FAIL] Subprocess error: {e}")
             return False
@@ -1283,6 +1309,9 @@ def _run_install(cmd: list[str], show_progress: bool = False) -> bool:
         stderr_out = stderr.strip() if stderr else ''
         if stderr_out and show_progress:
             print(f"\n  {PREFIX} Error details:\n{stderr_out[-500:]}")
+
+        # Save pip failure log for diagnostics
+        _save_install_failure_log(python_path, cmd, stderr_out, stdout)
 
         # Smarter error context
         _print_error_guidance(stderr_out, cmd)
@@ -1339,16 +1368,370 @@ def _print_error_guidance(stderr: str, cmd: list[str]):
         print(f"  {PREFIX} Try 'python install.py --backend cpu' as a fallback.")
 
 
+# -- Error Classification & Diagnostics ----------------------------------
+
+# Known process crash exit codes and their human-readable names.
+# These are used to provide useful diagnostic information when a subprocess
+# crashes without producing Python traceback output (e.g. access violation).
+_CRASH_EXIT_CODES: dict[int, str] = {
+    # Windows NT status codes (negative in subprocess returncode)
+    -1073741819: "ACCESS_VIOLATION (0xC0000005)",   # SIGSEGV equivalent
+    -1073740791: "STATUS_STACK_BUFFER_OVERRUN (0xC0000409)",
+    -1073741676: "STATUS_STACK_OVERFLOW (0xC00000FD)",
+    -1073741510: "DLL_NOT_FOUND (0xC0000135)",      # Import DLL missing
+    -1073740940: "STATUS_FLOAT_INEXACT_RESULT (0xC000008C)",
+    -1073741502: "CONTROL_C_EXIT (0xC000013A)",
+    # Unix signals (positive exit code = signal number)
+    -6:  "SIGABRT (signal 6)",
+    -11: "SIGSEGV (signal 11) — invalid memory reference",
+}
+
+
+def _interpret_exit_code(exit_code: int) -> str:
+    """Interpret a subprocess exit code into a human-readable description.
+
+    On Windows, process crashes produce large negative NTSTATUS codes
+    (e.g. -1073741819 = 0xC0000005 = ACCESS_VIOLATION). On Unix,
+    negative values indicate signal termination.
+
+    Args:
+        exit_code: The returncode from subprocess.run() or Popen.
+
+    Returns:
+        A human-readable string describing the exit condition.
+    """
+    if exit_code == 0:
+        return "Success"
+    if exit_code in _CRASH_EXIT_CODES:
+        return _CRASH_EXIT_CODES[exit_code]
+    # Generic interpretation
+    if exit_code < 0:
+        return f"Process terminated by signal ({exit_code})"
+    return f"Process exited with code {exit_code}"
+
+
+def _classify_import_error(stderr: str) -> str:
+    """Classify the import error stderr into a known category.
+
+    Returns one of:
+        'dll_not_found:<dll_name>', 'cuda_mismatch', 'no_module',
+        'crt_missing', 'avx2_incompatible', 'unknown'
+    """
+    lower = stderr.lower()
+
+    # DLL not found errors (most common on Windows)
+    if 'dll' in lower and ('not found' in lower or 'load' in lower):
+        for dll_pattern in ['cublas', 'cufft', 'curand', 'cusolver', 'cusparse',
+                           'cuda', 'ggml', 'python', 'vcruntime', 'msvcp',
+                           'api-ms-win-crt']:
+            if dll_pattern in lower:
+                return f'dll_not_found:{dll_pattern}'
+        return 'dll_not_found:unknown'
+
+    # CUDA version mismatch
+    if 'cuda' in lower and ('version' in lower or 'unsupported' in lower):
+        return 'cuda_mismatch'
+
+    # Module not found
+    if 'no module' in lower:
+        return 'no_module'
+
+    # CRT/VC++ runtime issues
+    if 'api-ms-win-crt' in lower or 'vcruntime' in lower or 'msvcp' in lower:
+        return 'crt_missing'
+
+    # AVX2 / CPU incompatibility
+    if 'illegal instruction' in lower or 'invalid instruction' in lower or 'avx' in lower:
+        return 'avx2_incompatible'
+
+    return 'unknown'
+
+
+def _print_error_tips(error_type: str, stderr: str):
+    """Print actionable tips based on the classified import error type."""
+    tips = {
+        'dll_not_found:cublas': [
+            "CUDA runtime DLL cublas not found.",
+            "The nvidia-cublas-cuXX package may not have installed correctly.",
+            "Try recovery option for CUDA 12.x cu121 index instead.",
+            "Or try CPU-only backend as fallback.",
+        ],
+        'dll_not_found:cuda': [
+            "General CUDA DLL load failure.",
+            "Your NVIDIA driver may be too old for this wheel version.",
+            "Try recovery option with older wheel v0.3.23.",
+            "Or try CUDA 12.x backend (cu121 index).",
+        ],
+        'dll_not_found:ggml': [
+            "Core ggml DLL failed to load.",
+            "This can indicate a corrupted download or incompatible wheel.",
+            "Try recovery option with older wheel v0.3.23.",
+            "Or try Vulkan backend which uses a different code path.",
+        ],
+        'dll_not_found:unknown': [
+            "An unknown DLL failed to load (see full error above).",
+            "Try CPU-only backend as a quick test.",
+            "If CPU works, the issue is CUDA-related.",
+        ],
+        'crt_missing': [
+            "Visual C++ Runtime not found or too old.",
+            "The wheel requires a newer VC++ redistributable.",
+            "Install from: https://aka.ms/vs/17/release/vc_redist.x64.exe",
+            "Or try older version v0.3.23 which may use an older CRT.",
+        ],
+        'cuda_mismatch': [
+            "CUDA version mismatch between wheel and runtime.",
+            "Try a different CUDA backend in the recovery menu.",
+        ],
+        'avx2_incompatible': [
+            "CPU lacks AVX2 instruction set.",
+            "Pre-built wheels require AVX2. Compile from source:",
+            "  set CMAKE_ARGS=-DGGML_AVX2=OFF -DGGML_CUDA=on",
+            "  pip install llama-cpp-python --force-reinstall",
+        ],
+        'no_module': [
+            "The package wasn't installed correctly.",
+            "Try 'python install.py --force' to reinstall.",
+        ],
+        'unknown': [
+            "Could not classify the import error automatically.",
+            "An error log has been saved — please share it for support.",
+            "Try CPU-only backend as a quick test.",
+        ],
+    }
+
+    tips_list = tips.get(error_type, tips['unknown'])
+    print(f"  {PREFIX} [DIAGNOSIS] {tips_list[0]}")
+    for tip in tips_list[1:]:
+        print(f"  {PREFIX}             {tip}")
+
+
+def _get_disk_space(path: str) -> str:
+    """Get available disk space for the given path (in human-readable format).
+
+    Uses shutil.disk_usage() as the primary method (cross-platform), with a
+    ctypes GetDiskFreeSpaceExW fallback for edge cases.
+
+    Args:
+        path: A file or directory path to check disk space for.
+
+    Returns:
+        Human-readable disk space string including the drive letter
+        (e.g. '124.5 GB free (D:)'), or 'N/A' if detection fails.
+    """
+    drive = Path(path).drive or path
+    # Method 1: shutil.disk_usage (cross-platform, reliable)
+    try:
+        usage = shutil.disk_usage(path)
+        free_gb = usage.free / (1024 ** 3)
+        return f"{free_gb:.1f} GB free ({drive})"
+    except Exception:
+        pass
+
+    # Method 2: ctypes fallback for edge cases (Windows only)
+    try:
+        import ctypes
+
+        free_bytes = ctypes.c_ulonglong(0)
+        result = ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+            ctypes.c_wchar_p(path),
+            None, None, ctypes.pointer(free_bytes),
+        )
+        if result != 0:  # BOOL: non-zero = success
+            free_gb = free_bytes.value / (1024 ** 3)
+            return f"{free_gb:.1f} GB free ({drive})"
+    except Exception:
+        pass
+
+    return "N/A"
+
+
+def _check_disk_space(python_path: str) -> None:
+    """Check available disk space on the Python drive and warn if low.
+
+    Prints a clear warning if free space is below thresholds:
+    - < 1 GB: CRITICAL — installation will almost certainly fail.
+    - < 5 GB: WARNING — may succeed but disk is tight.
+
+    Args:
+        python_path: Path to the Python executable (to determine the drive).
+    """
+    try:
+        usage = shutil.disk_usage(python_path)
+        free_gb = usage.free / (1024 ** 3)
+        drive = Path(python_path).drive or python_path
+
+        if free_gb < 1.0:
+            print()
+            print(f"  {'!' * 66}")
+            print(f"  !!  CRITICAL: Low disk space on {drive}")
+            print(f"  !!  Only {free_gb:.1f} GB free — installation will almost certainly fail.")
+            print(f"  !!  Free up space or install to a different drive.")
+            print(f"  {'!' * 66}")
+            print()
+            if not confirm("Continue anyway?"):
+                print(f"\n  {PREFIX} Installation cancelled.\n")
+                sys.exit(1)
+        elif free_gb < 5.0:
+            print()
+            print(f"  {PREFIX} [WARNING] Low disk space on {drive}: "
+                  f"{free_gb:.1f} GB free")
+            print(f"  {PREFIX} Installation may still succeed, but consider freeing space.")
+            print()
+    except Exception:
+        pass  # Non-critical check; proceed even if check fails
+
+
+def _save_error_log(
+    python_path: str,
+    backend: str,
+    stderr: str,
+    exit_code: int = -1,
+    pip_cmd: list[str] | None = None,
+    recovery_attempts: list[dict] | None = None,
+    label: str = "",
+):
+    """Save diagnostic information to a timestamped file for troubleshooting.
+
+    Args:
+        python_path: Path to the target Python executable.
+        backend: Backend key (e.g. 'cu118', 'vulkan').
+        stderr: Stderr output from the failed operation. For process crashes,
+                this should contain the crash diagnostics string.
+        exit_code: Subprocess exit code (helps detect crashes vs Python errors).
+        pip_cmd: The pip install command that was run (if applicable).
+        recovery_attempts: List of dicts describing previous recovery attempts.
+        label: Optional label for the log (e.g. 'recovery_2' or 'install_failure').
+    """
+    log_dir = Path(__file__).parent / 'install_logs'
+    log_dir.mkdir(exist_ok=True)
+
+    timestamp = time.strftime('%Y%m%d_%H%M%S')
+    suffix = f'_{label}' if label else ''
+    log_path = log_dir / f'install_error_{timestamp}{suffix}.txt'
+
+    # Crash interpretation
+    crash_info = _interpret_exit_code(exit_code) if exit_code != 0 else "N/A — process exited normally"
+    is_crash = exit_code != 0 and not stderr.strip()
+
+    lines = [
+        "EasyLLM Install Error Log",
+        f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Python: {python_path}",
+        f"Backend: {backend}",
+        f"Version: {get_installed_version(python_path) or 'N/A'}",
+        f"OS: {platform.platform()}",
+        f"CPU: {get_cpu_name() or 'Unknown'}",
+        f"Disk space: {_get_disk_space(python_path)}",
+        "",
+        f"--- Exit Status ---",
+        f"Exit code: {exit_code}",
+        f"Crash signal: {crash_info}",
+        f"Process crash detected: {'Yes' if is_crash else 'No'}",
+        "",
+    ]
+
+    if pip_cmd:
+        lines.append("--- Pip Install Command ---")
+        lines.append(' '.join(pip_cmd))
+        lines.append("")
+
+    if recovery_attempts:
+        lines.append("--- Recovery Attempts ---")
+        for i, attempt in enumerate(recovery_attempts, start=1):
+            outcome = attempt.get('outcome', 'unknown')
+            lines.append(
+                f"  Attempt {i}: backend={attempt.get('backend', '?')}, "
+                f"version={attempt.get('version', '?')}, "
+                f"outcome={outcome}"
+            )
+        lines.append("")
+
+    lines.append("--- Import Error ---")
+    lines.append(stderr if stderr else "(no error output captured)")
+    lines.append("")
+
+    lines.append("--- GPU Info ---")
+    # Append nvidia-smi output if available
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=name,driver_version,memory.total',
+             '--format=csv,noheader'],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            lines.append(result.stdout.strip())
+        else:
+            lines.append("(nvidia-smi not available)")
+    except Exception:
+        lines.append("(nvidia-smi query failed)")
+
+    log_path.write_text('\n'.join(lines), encoding='utf-8')
+    print(f"  {PREFIX} [INFO] Error log saved to: {log_path}")
+    print(f"  {PREFIX} [INFO] Share this file when asking for help.")
+    return log_path
+
+
+def _save_install_failure_log(
+    python_path: str,
+    cmd: list[str],
+    stderr: str,
+    stdout: str = "",
+):
+    """Save a log specifically for pip install failures.
+
+    Unlike _save_error_log which covers import/verification failures, this
+    captures the full pip output when pip itself fails to install the package.
+
+    Args:
+        python_path: Path to the target Python executable.
+        cmd: The pip install command that was run.
+        stderr: Full stderr from the pip process.
+        stdout: Full stdout from the pip process (useful for debugging).
+    """
+    log_dir = Path(__file__).parent / 'install_logs'
+    log_dir.mkdir(exist_ok=True)
+
+    timestamp = time.strftime('%Y%m%d_%H%M%S')
+    log_path = log_dir / f'install_error_{timestamp}_pip_failure.txt'
+
+    lines = [
+        "EasyLLM Pip Install Failure Log",
+        f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Python: {python_path}",
+        f"OS: {platform.platform()}",
+        f"CPU: {get_cpu_name() or 'Unknown'}",
+        f"Disk space: {_get_disk_space(python_path)}",
+        "",
+        "--- Pip Command ---",
+        ' '.join(cmd),
+        "",
+        "--- Pip stdout ---",
+        stdout if stdout else "(no stdout captured)",
+        "",
+        "--- Pip stderr ---",
+        stderr if stderr else "(no stderr captured)",
+        "",
+    ]
+
+    log_path.write_text('\n'.join(lines), encoding='utf-8')
+    print(f"  {PREFIX} [INFO] Pip failure log saved to: {log_path}")
+    print(f"  {PREFIX} [INFO] Share this file when asking for help.")
+
+
 # -- Verification & Post-Install -----------------------------------------
 
-def verify_installation(python_path: str) -> tuple[bool, str | None]:
+def verify_installation(python_path: str) -> tuple[bool, str | None, str, int]:
     """Verify llama-cpp-python is importable after installation.
 
     Args:
         python_path: Path to the target Python executable.
 
     Returns:
-        (success, version_string) tuple.
+        (success, version_string, raw_stderr, exit_code) tuple.
+        raw_stderr is the full stderr output for downstream error classification.
+        exit_code is the subprocess return code (useful for detecting process
+        crashes where stderr may be empty).
     """
     print(f"\n  {PREFIX} -- Verifying installation --")
     cmd = [
@@ -1360,7 +1743,7 @@ def verify_installation(python_path: str) -> tuple[bool, str | None]:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         print(f"  {PREFIX} [FAIL] Verification subprocess error: {e}")
-        return False, None
+        return False, None, "", -1
 
     if result.returncode == 0:
         version_str = result.stdout.strip()
@@ -1368,13 +1751,58 @@ def verify_installation(python_path: str) -> tuple[bool, str | None]:
         # Extract just the version number
         version_match = re.search(r'Version: (.+)', version_str)
         actual_version = version_match.group(1) if version_match else version_str
-        return True, actual_version
+        return True, actual_version, "", 0
     else:
         stderr = result.stderr.strip()
-        print(f"  {PREFIX} [FAIL] Verification failed!")
-        if stderr:
-            print(f"\n  {PREFIX} Error details:\n{stderr}")
-        return False, None
+        exit_code = result.returncode
+        print(f"  {PREFIX} [FAIL] Verification failed! (exit code {exit_code})")
+
+        # Detect process crash: empty stderr + non-zero exit = likely crash signal
+        if not stderr and exit_code != 0:
+            crash_desc = _interpret_exit_code(exit_code)
+            stderr = (
+                f"[PROCESS CRASH] Python subprocess exited with code {exit_code}\n"
+                f"  Exit code interpretation: {crash_desc}\n"
+                f"\n"
+                f"  No Python traceback was captured. This typically means the\n"
+                f"  import of llama_cpp crashed the Python interpreter directly\n"
+                f"  (e.g. an access violation or DLL loading failure in a C\n"
+                f"  extension module).\n"
+                f"\n"
+                f"  Common causes:\n"
+                f"  - CUDA DLL version mismatch (ggml-cuda.dll vs nvidia-* DLLs)\n"
+                f"  - Missing Visual C++ Runtime redistributable\n"
+                f"  - Corrupted wheel download / incomplete installation\n"
+                f"  - CPU instruction set incompatibility (e.g. AVX2 required)\n"
+            )
+            print()
+            print(f"  +{'=' * 66}+")
+            print(f"  |  PROCESS CRASH DETECTED{' ' * 40}|")
+            print(f"  +{'=' * 66}+")
+            print(f"  |  The Python subprocess crashed with exit code {exit_code}.")
+            print(f"  |  {crash_desc}")
+            print(f"  |")
+            print(f"  |  No Python traceback is available — the crash occurred")
+            print(f"  |  inside a C extension module (likely llama_cpp or CUDA DLL).")
+            print(f"  +{'=' * 66}+")
+            print()
+        elif stderr:
+            print()
+            print(f"  +{'=' * 66}+")
+            print(f"  |  VERIFICATION ERROR{' ' * 47}|")
+            print(f"  +{'=' * 66}+")
+            # Print each line of the error in full (no truncation)
+            for line in stderr.splitlines():
+                print(f"  | {line}")
+            print(f"  +{'=' * 66}+")
+            print()
+
+            # Use error classification for smarter diagnostic tips
+            error_type = _classify_import_error(stderr)
+            _print_error_tips(error_type, stderr)
+            print()
+
+        return False, None, stderr, exit_code
 
 
 def verify_comfyui_runtime(python_path: str, comfy_root: Path | None) -> bool:
@@ -1729,6 +2157,148 @@ def print_manual_instructions():
   """)
 
 
+def _show_recovery_menu(
+    python_path: str,
+    failed_backend: str,
+    error_stderr: str = "",
+    recovery_attempts: list[dict] | None = None,
+) -> bool:
+    """Interactive recovery menu with version + backend fallback options.
+
+    Presents 8 retry options including CUDA version fallbacks (cu121),
+    older wheel version (v0.3.23), and Vulkan backend. Automatically
+    suggests the best first option based on error classification.
+    Loops back to the menu if a retry also fails.
+
+    Args:
+        python_path: Path to the target Python executable.
+        failed_backend: The backend key that just failed (e.g. 'cu118').
+        error_stderr: Raw stderr from the failed import (for classification).
+
+    Returns:
+        True if the user eventually succeeded with a retry backend,
+        False if the user chose to exit.
+    """
+    # Track recovery attempts for error logging
+    attempts = list(recovery_attempts) if recovery_attempts else []
+
+    # Classify error for smart suggestion ordering
+    error_type = _classify_import_error(error_stderr) if error_stderr else 'unknown'
+
+    # Build weighted suggestion order based on error type.
+    # Order: Vulkan (GPU) > CPU latest > cu118 latest > cu121 latest > old versions
+    # v0.3.23 options are at the bottom since wheels may disappear from the index.
+    if 'dll_not_found' in error_type or 'crt_missing' in error_type:
+        # DLL/CRT issue → try Vulkan first (completely different code path),
+        # then old versions (older toolchain), then other CUDA backends
+        suggestion_order = ['6', '4', '5', '2', '3', '1']
+    elif 'cuda_mismatch' in error_type:
+        # CUDA mismatch → try cu121 first, then cu118 old
+        suggestion_order = ['3', '4', '2', '6', '5', '1']
+    elif 'avx2' in error_type:
+        # AVX2 issue → old CPU-only wheel
+        suggestion_order = ['5', '1', '4', '2', '3', '6']
+    else:
+        # Unknown → try Vulkan first (GPU acceleration > CPU-only)
+        suggestion_order = ['6', '1', '2', '3', '4', '5']
+
+    backends = {
+        '1': ('cpu',    LATEST_VERSION,  'CPU-only (latest v{} )'),
+        '2': ('cu118',  LATEST_VERSION,  'CUDA 11.x cu118 (latest v{} )'),
+        '3': ('cu121',  LATEST_VERSION,  'CUDA 12.x cu121 (latest v{} )'),
+        '4': ('cu118',  '0.3.23',        'CUDA 11.x cu118 OLDER v0.3.23'),
+        '5': ('cpu',    '0.3.23',        'CPU-only OLDER v0.3.23'),
+        '6': ('vulkan', LATEST_VERSION,  'Vulkan backend (latest v{}, any GPU)'),
+    }
+
+    while True:
+        print()
+        border = "-" * 66
+        print(f"  +{border}+")
+        print(f"  |  Installation did not complete successfully.                 |")
+        print(f"  |  Choose a recovery option:                                  |")
+        print(f"  +{'-' * 66}+")
+        print()
+        print("  [1] CPU-only backend (latest version, guaranteed)")
+        print("  [2] CUDA 11.x cu118 index (latest version)")
+        print("  [3] CUDA 12.x cu121 index (latest version)")
+        print("  [4] CUDA 11.x cu118 index + OLDER v0.3.23 wheel")
+        print("  [5] CPU-only + OLDER v0.3.23 wheel")
+        print("  [6] Vulkan backend (any GPU, experimental)")
+        print("  [7] Show manual installation guide")
+        print("  [8] Exit")
+        print()
+        print(f"  [TIP] Recommended first try: option [{suggestion_order[0]}]")
+        print()
+
+        choice = input("  Enter number (1-8): ").strip()
+
+        if choice in backends:
+            selected_backend, selected_version, label_template = backends[choice]
+            label = label_template.format(selected_version)
+            print()
+            print(f"  {PREFIX} Retrying: {label}")
+            print()
+            success = install_llama_cpp(
+                python_path, selected_backend,
+                force=True,
+                version=selected_version,
+            )
+            if success:
+                # Install CUDA libraries only for CUDA backends
+                if selected_backend.startswith('cu'):
+                    install_cuda_libraries(python_path, selected_backend)
+                fix_dll_search_path(python_path)
+                verified, version, error_stderr, exit_code = verify_installation(python_path)
+                _print_version_summary(python_path, selected_backend, version, verified)
+                if verified:
+                    print()
+                    print(f"  {PREFIX} [OK] Recovery succeeded with {label}!")
+                    print(f"  {PREFIX} Next step: Restart ComfyUI.")
+                    print()
+                    return True
+                else:
+                    print()
+                    print(f"  {PREFIX} [FAIL] Verification still failed with {label}.")
+                    attempts.append({
+                        'backend': selected_backend,
+                        'version': selected_version,
+                        'outcome': 'verification_failed',
+                        'exit_code': exit_code,
+                    })
+                    _save_error_log(
+                        python_path, selected_backend, error_stderr,
+                        exit_code=exit_code,
+                        recovery_attempts=attempts,
+                        label=f"recovery_{len(attempts)}",
+                    )
+            else:
+                print()
+                print(f"  {PREFIX} [FAIL] Installation failed with {label}.")
+                attempts.append({
+                    'backend': selected_backend,
+                    'version': selected_version,
+                    'outcome': 'install_failed',
+                })
+            # Loop back to menu
+        elif choice == '7':
+            print_manual_instructions()
+        elif choice == '8':
+            print()
+            # Note: error log was already saved in main() before the recovery
+            # menu appeared, so we don't save it again here.
+            print(f"  {PREFIX} Exiting recovery menu.")
+            print(f"  {PREFIX} You can re-run with a specific backend:")
+            print(f"  {PREFIX}   python install.py --backend cpu")
+            print(f"  {PREFIX}   python install.py --backend cu118")
+            print(f"  {PREFIX}   python install.py --backend cu121")
+            print(f"  {PREFIX}   python install.py --backend vulkan")
+            print()
+            return False
+        else:
+            print("  Invalid choice. Enter 1-8.")
+
+
 # -- Diagnostic / Check Mode (--check) ------------------------------------
 
 def run_diagnostics(python_path: str):
@@ -1897,6 +2467,9 @@ def main():
     print(f"  {PREFIX}     Python: {python_path}")
     print()
 
+    # ── Pre-flight: Check disk space before install ─────────────────────
+    _check_disk_space(python_path)
+
     # ── Diagnostic mode (--check) ────────────────────────────────────────
     if args.check:
         run_diagnostics(python_path)
@@ -1990,7 +2563,7 @@ def main():
         # Post-install: fix DLL search path issues (Windows only)
         fix_dll_search_path(python_path)
 
-        verified, version = verify_installation(python_path)
+        verified, version, error_stderr, exit_code = verify_installation(python_path)
 
         # Post-install: ComfyUI runtime verification
         script_dir = Path(__file__).resolve().parent
@@ -2005,6 +2578,14 @@ def main():
         _print_version_summary(python_path, actual_backend, version, verified)
 
         if not verified:
+            # ── Save error log immediately — before recovery menu ─────────
+            # This preserves the root cause even if the user eventually
+            # succeeds via a recovery option (e.g. Vulkan).
+            _save_error_log(
+                python_path, actual_backend, error_stderr,
+                exit_code=exit_code,
+            )
+
             print()
             print("+-----------------------------------------------------------------------+")
             print("|    [WARNING] Install command ran but verification failed              |")
@@ -2013,7 +2594,24 @@ def main():
             print("  This is unusual. Try running the install again, or see")
             print("  the troubleshooting section in README.md.")
             print()
-            print_manual_instructions()
+
+            # ── Interactive recovery menu (not in Manager mode) ────────────
+            if not is_manager_mode():
+                recovered = _show_recovery_menu(
+                    python_path, actual_backend,
+                    error_stderr=error_stderr,
+                )
+                if recovered:
+                    # User succeeded via recovery — exit cleanly
+                    pass
+                else:
+                    # User chose to exit recovery menu — log already saved above
+                    if not is_manager_mode():
+                        input("  Press Enter to exit...")
+                    sys.exit(1)
+            else:
+                # Manager mode: no interactivity, just exit with code
+                sys.exit(1)
     else:
         print()
         print("+-----------------------------------------------------------------------+")
@@ -2031,8 +2629,25 @@ def main():
         print("      set CMAKE_ARGS=-DGGML_CUDA=on")
         print("      pip install llama-cpp-python")
         print()
-        print_manual_instructions()
-        sys.exit(1)
+
+        # ── Interactive recovery menu (not in Manager mode) ────────────────
+        if not is_manager_mode():
+            recovered = _show_recovery_menu(python_path, backend)
+            if recovered:
+                # User succeeded via recovery — exit cleanly
+                pass
+            else:
+                # User chose to exit recovery menu
+                if not is_manager_mode():
+                    input("  Press Enter to exit...")
+                sys.exit(1)
+        else:
+            sys.exit(1)
+
+    # ── Terminal pause for non-Manager mode ─────────────────────────────
+    # Keeps the window open so the user can read/copy the final output.
+    if not is_manager_mode():
+        input("\n  Press Enter to exit...")
 
 
 if __name__ == '__main__':
@@ -2040,8 +2655,10 @@ if __name__ == '__main__':
         main()
     except KeyboardInterrupt:
         print("\n\n  Installation cancelled.\n")
+        input("  Press Enter to exit...")
         sys.exit(1)
     except Exception as e:
         print(f"\n  [FAIL] Unexpected error: {e}")
         print("  Please report this issue with the error details above.")
+        input("  Press Enter to exit...")
         sys.exit(1)

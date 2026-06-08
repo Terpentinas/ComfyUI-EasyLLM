@@ -10,7 +10,10 @@ no terminal commands needed.
 |--------|-------------|
 | **1 — Normal Mode** | Smart auto-selection. On older CPUs, the safe baseline version is installed for guaranteed compatibility. On modern CPUs, the latest version is used. |
 | **2 — Experimental Mode** | Forces the latest llama-cpp-python wheel even on older CPUs. Sets the `LLM_CHAT_TRY_LATEST=true` environment variable before running `install.py`. |
-| **3 — Exit** | Closes the launcher. |
+| **3 — Force CUDA 12.x** | Installs with NVIDIA CUDA 12.x backend for modern GPUs (RTX 30/40/50 series). Runs `python install.py --backend cu124 --force`. |
+| **4 — Force Vulkan** | Installs with Vulkan backend for older GPUs (GTX 900/1000/1600 series), AMD GPUs, or as a stable fallback when CUDA fails. Runs `python install.py --backend vulkan --force`. |
+| **5 — Force CPU-only** | Installs a CPU-only wheel with no GPU acceleration. Compatible with every system. Runs `python install.py --backend cpu --force`. |
+| **6 — Exit** | Closes the launcher. |
 
 ## Recovery Menu (shown on failure)
 
@@ -19,10 +22,13 @@ backup options — no need to re-run the launcher:
 
 | Option | Description |
 |--------|-------------|
-| **1 — Retry with CPU-only backend** | Falls back to a CPU-only wheel. Slower but guaranteed to work on any system. Runs `python install.py --backend cpu --force`. |
-| **2 — Retry with CUDA 11.x backend** | Falls back to CUDA 11.x (cu118), which is better suited for older GPUs like GTX 1660, GTX 1080, RTX 2080, etc. Runs `python install.py --backend cu118 --force`. |
-| **3 — Show manual guide** | Prints manual installation instructions you can copy and run yourself. |
-| **4 — Exit** | Closes the launcher. |
+| **1 — Retry with recovery menu** | Re-launches `install.py` which shows its own comprehensive 8-option recovery menu with CPU, CUDA 11/12, Vulkan, older version (v0.3.23), and manual guide options. |
+| **2 — Show manual guide** | Prints manual installation instructions you can copy and run yourself. |
+| **3 — Exit** | Closes the launcher. |
+
+*Note: The launcher delegates all backend-specific retries to `install.py`'s
+built-in recovery menu, which offers 8 options with smart suggestion ordering
+based on the error type. This avoids confusing double-menu nesting.*
 
 ## Flow Diagram
 
@@ -39,27 +45,31 @@ You (double-click launcher)
 │  Main Menu                       │
 │  [1] Normal                      │
 │  [2] Experimental                │
-│  [3] Exit                        │
+│  [3] Force CUDA 12.x             │
+│  [4] Force Vulkan                │
+│  [5] Force CPU-only              │
+│  [6] Exit                        │
 └──────────┬───────────────────────┘
            │ choice
            ▼
-┌──────────────────────────────────┐
-│  Runs: python install.py         │
-│  (with or without                │
-│   LLM_CHAT_TRY_LATEST)           │
-└──────────┬───────────────────────┘
+┌──────────────────────────────────────┐
+│  Runs: python install.py             │
+│  (with --backend + --force for       │
+│   options 3, 4, 5)                   │
+└──────────┬───────────────────────────┘
            │
            ▼
     ┌──────┴──────┐
     ▼              ▼
-┌────────┐  ┌──────────────────────┐
-│ SUCCESS│  │ FAILURE              │
-│ (exit) │  │ Recovery Menu:       │
-│        │  │ [1] Retry CPU-only   │
-│        │  │ [2] Retry CUDA 11.x  │
-│        │  │ [3] Manual guide     │
-│        │  │ [4] Exit             │
-└────────┘  └──────────────────────┘
+┌────────┐  ┌──────────────────────────┐
+│ SUCCESS│  │ FAILURE                  │
+│ (exit) │  │ Launcher Recovery Menu:  │
+│        │  │ [1] Re-launch install.py │
+│        │  │     (which shows 8-      │
+│        │  │      option recovery)     │
+│        │  │ [2] Manual guide         │
+│        │  │ [3] Exit                 │
+└────────┘  └──────────────────────────┘
 ```
 
 ---
@@ -126,29 +136,37 @@ also prints it before proceeding.
 flowchart TD
     A[User launches script] --> B[WARNING: Close ComfyUI first]
     B --> C{Show main menu}
+
     C -->|1 Normal| D[Run: python install.py]
     C -->|2 Experimental| E[Set LLM_CHAT_TRY_LATEST=true<br>Run: python install.py]
-    C -->|3 Exit| F[Exit]
+    C -->|3 CUDA 12.x| F[Run: python install.py<br>--backend cu124 --force]
+    C -->|4 Vulkan| G[Run: python install.py<br>--backend vulkan --force]
+    C -->|5 CPU-only| H[Run: python install.py<br>--backend cpu --force]
+    C -->|6 Exit| I[Exit]
 
-    D --> G{Install succeeded?}
-    E --> G
-    
-    G -->|Yes| H[Show success summary<br>Exit]
-    G -->|No| I{Show recovery menu}
-    
-    I -->|1 CPU| J[Run: python install.py --backend cpu --force]
-    I -->|2 CUDA 11.x| K[Run: python install.py --backend cu118 --force]
-    I -->|3 Manual| L[Run: python install.py --check]
-    I -->|4 Exit| F
-    
-    J --> M{Success?}
-    K --> M
-    
-    M -->|Yes| H
-    M -->|No| N[Show failure guide<br>Suggest manual steps]
-    N --> F
-    
-    L --> F
+    D --> J{Install succeeded?}
+    E --> J
+    F --> J
+    G --> J
+    H --> J
+
+    J -->|Yes| K[Show success summary<br>Exit]
+    J -->|No| L{Show launcher recovery menu}
+
+    L -->|1 Retry| M[Re-run: python install.py<br>→ shows 8-option recovery]
+    L -->|2 Manual| N[Run: python install.py --check]
+    L -->|3 Exit| I
+
+    M --> O{Success?}
+    O -->|Yes| K
+    O -->|No| P[install.py's 8-option menu<br>offers CPU, cu118, cu121,<br>v0.3.23, Vulkan fallbacks]
+    P --> Q{User picks option}
+    Q -->|Try backend| R[install_llama_cpp with<br>selected backend+version]
+    R --> S{Success?}
+    S -->|Yes| K
+    S -->|No| P
+
+    N --> I
 ```
 
 The launcher resolves its own directory to find `install.py` in the parent

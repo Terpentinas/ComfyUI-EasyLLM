@@ -9,7 +9,7 @@ Usage:
 
 Activation:
     - Environment variable: LLM_CHAT_DEBUG=1
-    - Or touch file:       custom_nodes/llm-chat/.debug
+    - Or touch file:       .debug in the EasyLLM custom_node directory
 
 Output:
     - Structured table at logging.INFO when first load completes

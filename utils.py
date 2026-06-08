@@ -2223,7 +2223,7 @@ def get_comfyui_input_dir() -> str:
         import folder_paths
         return folder_paths.get_input_directory()
     except ImportError:
-        # Fallback: relative to custom_nodes/llm-chat
+        # Fallback: relative to this custom_node's directory
         return os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..", "input")
         )

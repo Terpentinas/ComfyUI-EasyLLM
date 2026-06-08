@@ -500,7 +500,7 @@ No pip install needed. No extra requirements.
 Run the install helper script once:
 
 ```bash
-python custom_nodes\llm-chat\install.py
+python custom_nodes\ComfyUI-EasyLLM\install.py
 ```
 
 The script will:
@@ -760,7 +760,7 @@ The node uses three log prefixes in your ComfyUI terminal. Here's what they mean
 
 **Enabling deep debug profiling:**
 - Set environment variable `LLM_CHAT_DEBUG=1`, or
-- Create an empty file named `.debug` in the `custom_nodes/llm-chat/` folder
+- Create an empty file named `.debug` in the EasyLLM custom_node directory
 
 When reporting an issue on GitHub, paste your full console log — the `[DIAG]` lines help identify performance bottlenecks quickly.
 

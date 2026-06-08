@@ -876,7 +876,7 @@ class EasyLLMGGUF:
             except ImportError:
                 return self._ui_result(
                     "ERROR: llama_cpp_backend.py not found.\n\n"
-                    "Ensure the file exists in the llm-chat custom_node directory.",
+                    "Ensure the file exists in the EasyLLM custom_node directory.",
                     "ERROR: llama_cpp_backend.py not found.",
                     input_text=effective_text,
                 )
