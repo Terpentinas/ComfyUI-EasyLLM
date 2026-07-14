@@ -528,7 +528,7 @@ def _patch_missing_lm_head(transformer):
 # ── Shared Model Setup ─────────────────────────────────────────────
 
 
-def prepare_model_for_generation(clip, use_layer_offloading=False):
+def prepare_model_for_generation(clip, use_layer_offloading=False, vram_mode="unload"):
     """Extract transformer from CLIP, move to GPU, configure quantization.
 
     Performs shared model setup for generation:
@@ -597,48 +597,64 @@ def prepare_model_for_generation(clip, use_layer_offloading=False):
                 "on CPU for on-demand transfer"
             )
         else:
-            # ── Ask ComfyUI to free VRAM before loading LLM ──
-            # Other models may occupy VRAM; free_memory() unloads them
-            # before moving the LLM transformer to GPU.
-            try:
-                memory_needed = estimate_vram_needed(
-                    transformer=transformer,
-                    n_ctx=2048,
-                    use_layer_offloading=use_layer_offloading,
-                )
-                comfy.model_management.free_memory(
-                    memory_required=memory_needed,
-                    device=target_device,
-                    keep_loaded=[],  # Don't keep anything — free all non-essential
-                )
-                # Build informative log including weight bytes when available
-                try:
-                    total_params = sum(p.numel() for p in transformer.parameters())
-                    total_gb = sum(
-                        p.numel() * p.element_size() for p in transformer.parameters()
-                    ) / (1024**3)
-                    log_detail = (
-                        f"(~{total_params/1e9:.1f}B params, "
-                        f"{total_gb:.1f} GiB weights)"
-                    )
-                except Exception:
-                    log_detail = ""
-                logging.info(
-                    f"[LLM Chat] Requested ComfyUI to free "
-                    f"{memory_needed / (1024**3):.1f} GiB VRAM on {target_device} "
-                    f"{log_detail}"
-                )
-            except Exception as e:
-                logging.warning(
-                    f"[LLM Chat] Failed to request VRAM freeing: {e} — "
-                    "proceeding without explicit free_memory()"
-                )
-
-            move_model_to_device_safe(
-                transformer,
-                target_device=target_device,
-                target_dtype=target_dtype,
+            # ── keep_loaded fast path: skip free_memory + reload if model already on GPU ──
+            # When vram_mode is "keep_loaded" and the transformer is already resident
+            # on the target device, there's no need to free VRAM and re-load.
+            # This eliminates the unnecessary VRAM dip between consecutive generations.
+            _needs_reload = not (
+                vram_mode == "keep_loaded"
+                and transformer is not None
+                and getattr(transformer.get_input_embeddings().weight, 'device', None) == target_device
             )
+
+            if _needs_reload:
+                # ── Ask ComfyUI to free VRAM before loading LLM ──
+                # Other models may occupy VRAM; free_memory() unloads them
+                # before moving the LLM transformer to GPU.
+                try:
+                    memory_needed = estimate_vram_needed(
+                        transformer=transformer,
+                        n_ctx=2048,
+                        use_layer_offloading=use_layer_offloading,
+                    )
+                    comfy.model_management.free_memory(
+                        memory_required=memory_needed,
+                        device=target_device,
+                        keep_loaded=[],  # Don't keep anything — free all non-essential
+                    )
+                    # Build informative log including weight bytes when available
+                    try:
+                        total_params = sum(p.numel() for p in transformer.parameters())
+                        total_gb = sum(
+                            p.numel() * p.element_size() for p in transformer.parameters()
+                        ) / (1024**3)
+                        log_detail = (
+                            f"(~{total_params/1e9:.1f}B params, "
+                            f"{total_gb:.1f} GiB weights)"
+                        )
+                    except Exception:
+                        log_detail = ""
+                    logging.info(
+                        f"[LLM Chat] Requested ComfyUI to free "
+                        f"{memory_needed / (1024**3):.1f} GiB VRAM on {target_device} "
+                        f"{log_detail}"
+                    )
+                except Exception as e:
+                    logging.warning(
+                        f"[LLM Chat] Failed to request VRAM freeing: {e} — "
+                        "proceeding without explicit free_memory()"
+                    )
+
+                move_model_to_device_safe(
+                    transformer,
+                    target_device=target_device,
+                    target_dtype=target_dtype,
+                )
+            else:
+                logging.debug(
+                    f"[LLM Chat] keep_loaded: transformer already on {target_device} — "
+                    "skipping free_memory() and model reload, preserving GPU state"
+                )
         inner_sd_clip.execution_device = target_device
 
         # ── Quantized forward path optimization ──

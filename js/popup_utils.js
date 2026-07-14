@@ -153,11 +153,6 @@ export function updateScrollState(container) {
     if (!container) return;
     const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - SCROLL_THRESHOLD;
     container._isUserScrolledUp = !atBottom;
-    // Show/hide the scroll-to-bottom button using CSS class
-    const btn = container._scrollToBottomBtn;
-    if (btn) {
-        btn.classList.toggle("llm-scroll-bottom-visible", !atBottom);
-    }
 }
 
 /**
@@ -167,13 +162,6 @@ export function scrollToBottom(container) {
     if (!container) return;
     container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
     container._isUserScrolledUp = false;
-    container._pendingNewMsgCount = 0;
-    const btn = container._scrollToBottomBtn;
-    if (btn) {
-        btn.classList.remove("llm-scroll-bottom-visible");
-        const badge = btn.querySelector(".llm-chat-scroll-badge");
-        if (badge) badge.textContent = "";
-    }
 }
 
 /**
@@ -183,33 +171,12 @@ export function autoScrollIfNeeded(container) {
     if (!container) return;
     if (!container._isUserScrolledUp) {
         container.scrollTop = container.scrollHeight;
-    } else {
-        // Increment pending new message count for badge
-        container._pendingNewMsgCount = (container._pendingNewMsgCount || 0) + 1;
-        const btn = container._scrollToBottomBtn;
-        if (btn) {
-            const badge = btn.querySelector(".llm-chat-scroll-badge");
-            if (badge) badge.textContent = String(container._pendingNewMsgCount);
-        }
     }
 }
 
 /**
  * Create a floating scroll-to-bottom button for a history container.
  */
-export function createScrollToBottomBtn(container) {
-    // Don't recreate orphaned refs; container.innerHTML = '' detaches them
-    if (container._scrollToBottomBtn?.isConnected) return container._scrollToBottomBtn;
-    const btn = document.createElement("button");
-    btn.className = "llm-chat-scroll-bottom-btn";
-    btn.innerHTML = '<span class="llm-chat-scroll-badge"></span>⬇';
-    btn.title = "Scroll to latest message";
-    btn.onclick = () => scrollToBottom(container);
-    container.appendChild(btn);
-    container._scrollToBottomBtn = btn;
-    container._pendingNewMsgCount = 0;
-    return btn;
-}
 
 // ────────────────────────────────────────────────────────────────────────
 // Timestamp formatting
@@ -318,6 +285,42 @@ export function parseThinkBlocks(text) {
     }
 
     return { thinking: null, response: text };
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Attached text file block parsing
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * Parse attached text file markers from message text.
+ *
+ * Handles the format produced by attachTextFile():
+ *   [Attached EXT: filename]\ncontent\n[/EXT]
+ *
+ * Returns { displayText, attachments }
+ *   displayText:   string with attachment markers stripped
+ *   attachments:   Array of { ext, filename, content }
+ *
+ * Streaming-safe: partial/unclosed markers remain as plain text in displayText.
+ */
+export function parseAttachedTextBlocks(text) {
+    if (!text) return { displayText: text || "", attachments: [] };
+
+    const attachments = [];
+    // Match fully-closed attachment blocks: [Attached EXT: name]\n...\n[/EXT]
+    const displayText = text.replace(
+        /\[Attached\s+(\w+):\s*([^\]]+)\]\n([\s\S]*?)\n\[\/\1\]/g,
+        (match, ext, filename, content) => {
+            attachments.push({
+                ext: ext.toUpperCase(),
+                filename: filename.trim(),
+                content: content.trim(),
+            });
+            return ""; // Remove marker from display text
+        }
+    );
+
+    return { displayText: displayText.trim(), attachments };
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -526,9 +529,20 @@ export function estimateContextTokens(history, options = {}) {
             const role = entry.role === "assistant" ? "assistant" : "user";
             historyTokens += overhead[role] ?? overhead.user;
 
-            // 3. Image token cost (if entry has an attached image)
-            if (options.countImages !== false && entry.image) {
-                imageTokens += estimateImageTokens(entry.image);
+            // 3. Image token cost (if entry has attached images)
+            if (options.countImages !== false) {
+                if (entry.images && entry.images.length > 0) {
+                    for (const img of entry.images) {
+                        const imgSrc = img.data || img.filename;
+                        if (imgSrc) {
+                            imageTokens += estimateImageTokens(imgSrc);
+                        } else {
+                            imageTokens += 512; // default fallback
+                        }
+                    }
+                } else if (entry.image) {
+                    imageTokens += estimateImageTokens(entry.image);
+                }
             }
         }
     }

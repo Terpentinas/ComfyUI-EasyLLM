@@ -38,6 +38,7 @@ API Routes
 
 import asyncio
 import logging
+import os
 
 import torch
 
@@ -54,82 +55,6 @@ _history_store: dict[str, list] = {}
 # Keyed by node_id, populated by frontend via POST after user uploads
 # to ComfyUI's /upload/image endpoint. Retrieved by generate() during execution.
 _uploaded_images: dict[str, str] = {}
-
-# ── Background model pre-loading ──────────────────────────────────────────
-# Stores futures and results for models being pre-loaded in the background
-# so generation starts instantly when the user clicks Queue Prompt.
-import threading
-import concurrent.futures
-_preload_lock = threading.Lock()
-_preload_futures: dict[str, concurrent.futures.Future] = {}
-_preload_results: dict[str, object] = {}
-
-def _make_preload_key(model_path: str, mmproj_path: str,
-                      n_gpu_layers: int, use_mlock: bool, n_ctx: int) -> str:
-    """Create a canonical cache key for pre-loaded models."""
-    return f"{model_path}||{mmproj_path or ''}||{n_gpu_layers}||{use_mlock}||{n_ctx}"
-
-def _load_model_in_background(model_path: str, mmproj_path: str,
-                               n_gpu_layers: int, use_mlock: bool, n_ctx: int) -> object:
-    """Load a model in a background thread.
-
-    Called via ``run_in_executor``.  Stores the loaded model in
-    ``_preload_results`` so ``chat_node.py``'s ``_get_cached_model``
-    can pick it up without re-loading from disk.
-    """
-    from .llama_cpp_backend import LlamaCppModel
-    logging.info(
-        f"[LLM Chat] Background pre-loading model: {model_path} "
-        f"(mmproj={mmproj_path or 'none'})"
-    )
-    try:
-        model = LlamaCppModel(
-            model_path=model_path,
-            mmproj=mmproj_path or None,
-            n_gpu_layers=n_gpu_layers,
-            use_mlock=use_mlock,
-            n_ctx=n_ctx,
-        )
-        model.load()
-        key = _make_preload_key(model_path, mmproj_path, n_gpu_layers, use_mlock, n_ctx)
-        with _preload_lock:
-            _preload_results[key] = model
-            _preload_futures.pop(key, None)
-        logging.info(
-            f"[LLM Chat] Background pre-load complete: {model_path}"
-        )
-        from .debug_profiler import profiler
-        profiler.print_report()
-        # Notify frontend via WebSocket
-        try:
-            from server import PromptServer
-            PromptServer.instance.send_sync("easyllm_model_ready", {
-                "model_path": model_path,
-                "mmproj_path": mmproj_path or "",
-                "status": "ready",
-                "architecture": model.metadata.get("general.architecture", ""),
-            })
-        except Exception:
-            pass
-        return model
-    except Exception as e:
-        logging.error(
-            f"[LLM Chat] Background pre-load failed for {model_path}: {e}"
-        )
-        key = _make_preload_key(model_path, mmproj_path, n_gpu_layers, use_mlock, n_ctx)
-        with _preload_lock:
-            _preload_futures.pop(key, None)
-        try:
-            from server import PromptServer
-            PromptServer.instance.send_sync("easyllm_model_ready", {
-                "model_path": model_path,
-                "mmproj_path": mmproj_path or "",
-                "status": "error",
-                "error": str(e),
-            })
-        except Exception:
-            pass
-        return None
 
 # ── Known GGUF model prefix → architecture mappings ──────────────────────
 # Maps filename prefixes (observed in common GGUF naming conventions) to
@@ -257,6 +182,7 @@ def setup_streaming_routes():
                 body = await request.json()
                 history = body.get("history", [])
                 if isinstance(history, list):
+                    # Write to ephemeral store for LLM context during execution
                     _history_store[node_id] = history
                     return web.json_response({"success": True})
                 else:
@@ -683,60 +609,35 @@ def setup_streaming_routes():
                     {"success": False, "error": str(e)}, status=500
                 )
 
-        # ── Background Model Pre-load ─────────────────────────────────────
+        # ── Model Cache Management ────────────────────────────────────────
 
-        @PromptServer.instance.routes.post("/easyllm/preload_model")
-        async def preload_model_api(request):
-            """Start loading a model in the background.
+        @PromptServer.instance.routes.post("/easyllm/unload_model_cache")
+        async def unload_model_cache(request):
+            """Unload all cached models from EasyLLMGGUF._model_cache.
 
-            Body: {model_path, mmproj_path, n_gpu_layers, use_mlock, n_ctx}
-            Returns immediately with ``{"status": "loading"}``.
-            When complete or failed, pushes a ``easyllm_model_ready``
-            WebSocket event to the frontend.
+            Called by the frontend Apply button (when vram_mode=keep_loaded)
+            to immediately free VRAM before a new model is selected.
+            No body required. Returns immediately.
             """
-            import asyncio
+            from .chat_node import EasyLLMGGUF
             try:
-                body = await request.json()
-                model_path = body.get("model_path", "")
-                mmproj_path = body.get("mmproj_path", "")
-                n_gpu_layers = int(body.get("n_gpu_layers", 0))
-                use_mlock = bool(body.get("use_mlock", False))
-                n_ctx = int(body.get("n_ctx", 2048))
-
-                if not model_path:
-                    return web.json_response(
-                        {"status": "error", "error": "model_path is required"},
-                        status=400,
-                    )
-
-                key = _make_preload_key(
-                    model_path, mmproj_path, n_gpu_layers, use_mlock, n_ctx
-                )
-
-                with _preload_lock:
-                    # Cancel any existing pre-load for the same key
-                    existing = _preload_futures.get(key)
-                    if existing and not existing.done():
-                        existing.cancel()
-                    _preload_results.pop(key, None)
-
-                    # Launch background load
-                    loop = asyncio.get_event_loop()
-                    future = loop.run_in_executor(
-                        None, _load_model_in_background,
-                        model_path, mmproj_path, n_gpu_layers, use_mlock, n_ctx,
-                    )
-                    _preload_futures[key] = future
-
-                return web.json_response({"status": "loading"})
-
+                with EasyLLMGGUF._model_cache_lock:
+                    for key in list(EasyLLMGGUF._model_cache.keys()):
+                        try:
+                            EasyLLMGGUF._model_cache[key].unload()
+                        except Exception:
+                            pass
+                        del EasyLLMGGUF._model_cache[key]
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                return web.json_response({"status": "ok"})
             except Exception as e:
-                logging.error(
-                    f"[LLM Chat] preload_model error: {e}"
+                logging.warning(
+                    f"[LLM Chat] unload_model_cache error: {e}"
                 )
-                return web.json_response(
-                    {"status": "error", "error": str(e)}, status=500
-                )
+                return web.json_response({"status": "ok"})  # best-effort
 
         # ── Image Upload Routes (no-wire chat mode) ─────────────────
 
@@ -766,8 +667,937 @@ def setup_streaming_routes():
             _uploaded_images.pop(node_id, None)
             return web.json_response({"success": True})
 
+        # ── JSON Database Routes (Phase 1) ──────────────────────────
+
+        @PromptServer.instance.routes.get("/easyllm/db/history/{node_id}")
+        async def db_get_history(request):
+            """Load chat or enhancer history for a node from the on-disk database.
+
+            Supports query parameters:
+            - ``?type=enhancer`` to select enhancer history (default: chat)
+            - ``?limit=N`` to return only the last N entries (pagination)
+            - ``?offset=N`` to skip N entries from the end (used with limit)
+
+            Called by the frontend popup on open to load persisted history.
+            """
+            node_id = request.match_info["node_id"]
+            hist_type = request.query.get("type", "chat")
+            limit_str = request.query.get("limit", "0")
+            offset_str = request.query.get("offset", "0")
+            try:
+                limit = int(limit_str) if limit_str.isdigit() else 0
+                offset = int(offset_str) if offset_str.isdigit() else 0
+            except (ValueError, AttributeError):
+                limit = 0
+                offset = 0
+
+            try:
+                from .history_db import get_history, is_available
+                if not is_available():
+                    return web.json_response({"entries": [], "available": False})
+                entries = get_history(
+                    node_id, hist_type, offset=offset, limit=limit,
+                )
+
+                # Also return total count for pagination UI
+                total_count = len(get_history(
+                    node_id, hist_type,
+                ) or [])
+
+                return web.json_response({
+                    "entries": entries or [],
+                    "available": True,
+                    "total_count": total_count,
+                    "limit": limit,
+                    "offset": offset,
+                })
+            except Exception as e:
+                logging.warning(
+                    f"[LLM Chat DB] GET history failed for node {node_id}: {e}"
+                )
+                return web.json_response(
+                    {"entries": [], "error": str(e)}, status=500
+                )
+
+        @PromptServer.instance.routes.post("/easyllm/db/history/{node_id}")
+        async def db_set_history(request):
+            """Save chat or enhancer history for a node to the on-disk database.
+
+            Full replacement — all previous entries for this node are discarded.
+            Also updates the old ephemeral store for backward compatibility with
+            get_chat_history() during execution (Phase 2 bidirectional sync).
+            Called by the frontend popup on close, or before queue.
+            """
+            node_id = request.match_info["node_id"]
+            try:
+                body = await request.json()
+                entries = body.get("entries", [])
+                hist_type = body.get("type", "chat")
+                metadata = body.get("metadata", None)
+
+                from .history_db import set_history, is_available
+                if not is_available():
+                    # Fallback: write to old ephemeral store too
+                    if isinstance(entries, list):
+                        _history_store[node_id] = entries
+                    return web.json_response({"success": True, "available": False})
+
+                ok = set_history(node_id, entries, hist_type, metadata)
+
+                # ── NEW: bidirectional sync — update ephemeral store too ──
+                if ok and isinstance(entries, list) and hist_type == "chat":
+                    _history_store[node_id] = entries
+
+                if ok:
+                    return web.json_response({"success": True})
+                else:
+                    return web.json_response(
+                        {"success": False, "error": "Failed to save history (empty entries?)"},
+                        status=400,
+                    )
+            except Exception as e:
+                logging.warning(
+                    f"[LLM Chat DB] POST history failed for node {node_id}: {e}"
+                )
+                return web.json_response(
+                    {"success": False, "error": str(e)}, status=500
+                )
+
+        # ── JSON Database Routes — Incremental Append (Phase 6) ──────────
+
+        @PromptServer.instance.routes.post("/easyllm/db/history/{node_id}/append")
+        async def db_append_history(request):
+            """Append a single entry to history (incremental, not full replace).
+
+            Body::
+
+                {
+                    "entry": { "role": "user", "message": "...", ... },
+                    "type": "chat" | "enhancer"
+                }
+
+            The server appends the entry to the existing session on disk.
+            Returns the saved entry so the frontend can sync its display cache.
+
+            Called by ``handlePopupSend()`` and ``onExecuted()`` to persist
+            entries one at a time instead of replacing the entire history.
+            """
+            node_id = request.match_info["node_id"]
+            try:
+                body = await request.json()
+                entry = body.get("entry")
+                hist_type = body.get("type", "chat")
+
+                if not entry or not isinstance(entry, dict):
+                    return web.json_response(
+                        {"success": False, "error": "Missing or invalid entry"},
+                        status=400,
+                    )
+
+                from .history_db import append_history, is_available
+                if not is_available():
+                    return web.json_response(
+                        {"success": False, "available": False},
+                        status=503,
+                    )
+
+                ok = append_history(node_id, [entry], hist_type)
+                if ok:
+                    return web.json_response({
+                        "success": True,
+                        "entry": entry,
+                    })
+                else:
+                    return web.json_response(
+                        {"success": False, "error": "Append failed"},
+                        status=500,
+                    )
+            except Exception as e:
+                logging.warning(
+                    f"[LLM Chat DB] POST append failed for node {node_id}: {e}"
+                )
+                return web.json_response(
+                    {"success": False, "error": str(e)}, status=500
+                )
+
+        @PromptServer.instance.routes.post("/easyllm/db/history/{node_id}/append-images")
+        async def db_append_images(request):
+            """Attach generated images to the history entry matching ``session_uuid``.
+
+            Body::
+
+                {
+                    "session_uuid": "...",
+                    "images": [{ "type": "generated", "filename": "...", "data": null }, ...],
+                    "type": "chat" | "enhancer"
+                }
+
+            The server finds the entry with the matching ``_sessionUuid`` field,
+            appends the image objects to its ``images`` array, and returns the
+            updated entry. The frontend then syncs its display cache.
+
+            Called by ImageCapture's ``onExecuted()`` to persist generated
+            images without requiring a full history rewrite.
+            """
+            node_id = request.match_info["node_id"]
+            try:
+                body = await request.json()
+                session_uuid = body.get("session_uuid")
+                images = body.get("images", [])
+                hist_type = body.get("type", "chat")
+
+                if not session_uuid or not images:
+                    return web.json_response(
+                        {"success": False, "error": "Missing session_uuid or images"},
+                        status=400,
+                    )
+
+                from .history_db import append_images_to_entry, is_available
+                if not is_available():
+                    return web.json_response(
+                        {"success": False, "available": False},
+                        status=503,
+                    )
+
+                updated_entry = append_images_to_entry(
+                    node_id, session_uuid, images, hist_type
+                )
+                if updated_entry is not None:
+                    return web.json_response({
+                        "success": True,
+                        "entry": updated_entry,
+                    })
+                else:
+                    return web.json_response(
+                        {"success": False, "error": "No matching entry found"},
+                        status=404,
+                    )
+            except Exception as e:
+                logging.warning(
+                    f"[LLM Chat DB] POST append-images failed for node {node_id}: {e}"
+                )
+                return web.json_response(
+                    {"success": False, "error": str(e)}, status=500
+                )
+
+        # ── Incremental Update / Delete Entry (Cleanup Phase) ─────────────
+
+        @PromptServer.instance.routes.put("/easyllm/db/history/{node_id}/entry")
+        async def db_update_entry(request):
+            """Update a single history entry by index.
+
+            Body::
+
+                {
+                    "index": 0,
+                    "entry": { "role": "assistant", "message": "...", ... },
+                    "type": "chat" | "enhancer"
+                }
+
+            Calls ``history_db.update_entry()`` to replace only the specified
+            entry rather than rewriting the entire session.  Used by the
+            ``saveEdit()`` and enhancer-edit frontend paths.
+
+            Returns ``{"success": true}`` on success, or an error status.
+            """
+            node_id = request.match_info["node_id"]
+            try:
+                body = await request.json()
+                entry_index = body.get("index")
+                updated_entry = body.get("entry")
+                hist_type = body.get("type", "chat")
+
+                if entry_index is None or updated_entry is None:
+                    return web.json_response(
+                        {"success": False, "error": "Missing index or entry"},
+                        status=400,
+                    )
+                if not isinstance(entry_index, int) or entry_index < 0:
+                    return web.json_response(
+                        {"success": False, "error": "Invalid index"},
+                        status=400,
+                    )
+
+                from .history_db import update_entry, is_available
+                if not is_available():
+                    return web.json_response(
+                        {"success": False, "available": False},
+                        status=503,
+                    )
+
+                ok = update_entry(node_id, entry_index, updated_entry, hist_type)
+                if ok:
+                    return web.json_response({"success": True})
+                else:
+                    return web.json_response(
+                        {"success": False, "error": "Update failed (index out of range?)"},
+                        status=404,
+                    )
+            except Exception as e:
+                logging.warning(
+                    f"[LLM Chat DB] PUT entry failed for node {node_id}: {e}"
+                )
+                return web.json_response(
+                    {"success": False, "error": str(e)}, status=500
+                )
+
+        @PromptServer.instance.routes.delete("/easyllm/db/history/{node_id}/entry")
+        async def db_delete_entry(request):
+            """Delete a single history entry by index.
+
+            Query params::
+
+                index (int): The zero-based index of the entry to delete.
+                type (str): "chat" (default) or "enhancer".
+
+            Calls ``history_db.delete_entry()`` to remove only the specified
+            entry rather than rewriting the entire session.  Used by the
+            ``deleteMessage()`` frontend path.
+
+            Returns ``{"success": true}`` on success, or an error status.
+            """
+            node_id = request.match_info["node_id"]
+            try:
+                index_str = request.query.get("index")
+                hist_type = request.query.get("type", "chat")
+
+                if index_str is None or not index_str.isdigit():
+                    return web.json_response(
+                        {"success": False, "error": "Missing or invalid index query param"},
+                        status=400,
+                    )
+
+                entry_index = int(index_str)
+
+                from .history_db import delete_entry, is_available
+                if not is_available():
+                    return web.json_response(
+                        {"success": False, "available": False},
+                        status=503,
+                    )
+
+                ok = delete_entry(node_id, entry_index, hist_type)
+                if ok:
+                    return web.json_response({"success": True})
+                else:
+                    return web.json_response(
+                        {"success": False, "error": "Delete failed (index out of range?)"},
+                        status=404,
+                    )
+            except Exception as e:
+                logging.warning(
+                    f"[LLM Chat DB] DELETE entry failed for node {node_id}: {e}"
+                )
+                return web.json_response(
+                    {"success": False, "error": str(e)}, status=500
+                )
+
+        @PromptServer.instance.routes.delete("/easyllm/db/history/{node_id}")
+        async def db_clear_history(request):
+            """Delete all history for a node from the on-disk database.
+
+            Supports query parameter ``?type=chat`` (default) or ``?type=enhancer``
+            to selectively clear only one history type.
+
+            Called by the "Clear" button in the chat popup.
+            """
+            node_id = request.match_info["node_id"]
+            hist_type = request.query.get("type", "chat")  # Phase 3: support ?type=enhancer
+            try:
+                from .history_db import clear_history, is_available
+                if not is_available():
+                    # Fallback: clear old ephemeral store
+                    _history_store.pop(node_id, None)
+                    _uploaded_images.pop(node_id, None)
+                    return web.json_response({"success": True, "available": False})
+
+                ok = clear_history(node_id, hist_type)  # Pass hist_type
+                return web.json_response({"success": ok})
+            except Exception as e:
+                logging.warning(
+                    f"[LLM Chat DB] DELETE history failed for node {node_id}: {e}"
+                )
+                return web.json_response(
+                    {"success": False, "error": str(e)}, status=500
+                )
+
+        # ── Settings API ─────────────────────────────────────────────────
+
+        @PromptServer.instance.routes.get("/easyllm/db/settings")
+        async def db_get_settings(request):
+            """Return current database runtime settings.
+
+            Returns auto_cleanup_enabled, interval, max_size, max_age,
+            immediate_write, and db_path.
+            """
+            try:
+                from .history_db import get_settings, is_available
+                if not is_available():
+                    return web.json_response({"available": False})
+                settings = get_settings()
+                return web.json_response({"available": True, **settings})
+            except Exception as e:
+                logging.warning(f"[LLM Chat DB] Get settings failed: {e}")
+                return web.json_response(
+                    {"available": False, "error": str(e)}, status=500
+                )
+
+        @PromptServer.instance.routes.post("/easyllm/db/settings")
+        async def db_update_settings(request):
+            """Update runtime database settings.
+
+            Accepts JSON with any subset of keys:
+            ``auto_cleanup_enabled``, ``auto_cleanup_interval_sec``,
+            ``max_size_mb``, ``max_age_days``, ``immediate_write``.
+
+            Changes are persisted to ``settings.json`` and survive restarts.
+            """
+            try:
+                from .history_db import update_settings, is_available
+                if not is_available():
+                    return web.json_response({"available": False})
+                body = await request.json()
+                settings = update_settings(body)
+                return web.json_response({"status": "ok", **settings})
+            except Exception as e:
+                logging.warning(f"[LLM Chat DB] Update settings failed: {e}")
+                return web.json_response(
+                    {"status": "error", "error": str(e)}, status=500
+                )
+
+        # ── Destroy API ─────────────────────────────────────────────────
+
+        @PromptServer.instance.routes.post("/easyllm/db/destroy")
+        async def db_destroy(request):
+            """Destroy and recreate the database.
+
+            WARNING: Irreversible. All history and images will be lost.
+            Requires ``{"confirm": true}`` in the request body to proceed.
+            """
+            try:
+                body = await request.json()
+                confirm = body.get("confirm", False)
+                if not confirm:
+                    return web.json_response(
+                        {"status": "error", "error": "Confirmation required"},
+                        status=400,
+                    )
+
+                from .history_db import destroy_database, is_available
+                if not is_available():
+                    return web.json_response({"available": False})
+
+                result = destroy_database()
+                return web.json_response(result)
+            except Exception as e:
+                logging.warning(f"[LLM Chat DB] Destroy failed: {e}")
+                return web.json_response(
+                    {"status": "error", "error": str(e)}, status=500
+                )
+
+        @PromptServer.instance.routes.post("/easyllm/db/image")
+        async def db_save_image(request):
+            """Save an image to the database and return its UUID filename.
+
+            Accepts JSON with ``base64`` (data URI string) and optional
+            ``type`` field (``"input"`` or ``"generated"``).
+            Returns ``{"filename": "<uuid>_<type>.png"}``.
+            """
+            try:
+                body = await request.json()
+                b64_data = body.get("base64", "")
+                image_type = body.get("type", "input")
+
+                from .history_db import save_image_from_base64, is_available
+                if not is_available():
+                    return web.json_response(
+                        {"filename": None, "available": False}
+                    )
+
+                filename = save_image_from_base64(b64_data, image_type)
+                return web.json_response({"filename": filename})
+            except Exception as e:
+                logging.warning(f"[LLM Chat DB] Save image failed: {e}")
+                return web.json_response(
+                    {"filename": None, "error": str(e)}, status=500
+                )
+
+        @PromptServer.instance.routes.get("/easyllm/db/image/{filename}")
+        async def db_get_image(request):
+            """Serve an image file from the database.
+
+            Returns raw PNG bytes with the correct content type header.
+            """
+            filename = request.match_info["filename"]
+            try:
+                from .history_db import get_image_data, is_available
+                if not is_available():
+                    return web.Response(status=404, text="Database not available")
+
+                data = get_image_data(filename)
+                if data is None:
+                    return web.Response(status=404, text="Image not found")
+
+                return web.Response(
+                    body=data,
+                    content_type="image/png",
+                    headers={
+                        "Cache-Control": "public, max-age=86400",
+                    },
+                )
+            except Exception as e:
+                logging.warning(
+                    f"[LLM Chat DB] GET image failed for {filename}: {e}"
+                )
+                return web.Response(status=500, text=str(e))
+
+        @PromptServer.instance.routes.post("/easyllm/db/cleanup")
+        async def db_cleanup(request):
+            """Run database cleanup: remove orphaned and expired data.
+
+            Idempotent — safe to call repeatedly.
+            Returns stats dict with removal counts.
+            """
+            try:
+                from .history_db import cleanup, is_available
+                if not is_available():
+                    return web.json_response({"status": "unavailable"})
+
+                stats = cleanup()
+                return web.json_response({"status": "ok", "stats": stats})
+            except Exception as e:
+                logging.warning(f"[LLM Chat DB] Cleanup failed: {e}")
+                return web.json_response(
+                    {"status": "error", "error": str(e)}, status=500
+                )
+
+        @PromptServer.instance.routes.post("/easyllm/db/scan-orphans")
+        async def db_scan_orphans(request):
+            """Scan for orphaned images without deleting anything.
+
+            Returns count and total bytes of images not referenced by any session.
+            """
+            try:
+                from .history_db import scan_orphaned_images, is_available
+                if not is_available():
+                    return web.json_response({"available": False})
+
+                result = scan_orphaned_images()
+                return web.json_response({"status": "ok", "orphans": result})
+            except Exception as e:
+                logging.warning(f"[LLM Chat DB] Scan orphans failed: {e}")
+                return web.json_response(
+                    {"status": "error", "error": str(e)}, status=500
+                )
+
+        @PromptServer.instance.routes.get("/easyllm/db/stats")
+        async def db_stats(request):
+            """Return database statistics.
+
+            Returns total_nodes, total_sessions, total_images, disk_size, etc.
+            """
+            try:
+                from .history_db import get_stats, is_available
+                if not is_available():
+                    return web.json_response({"available": False})
+
+                stats = get_stats()
+                return web.json_response({"available": True, **stats})
+            except Exception as e:
+                logging.warning(f"[LLM Chat DB] Stats failed: {e}")
+                return web.json_response(
+                    {"available": False, "error": str(e)}, status=500
+                )
+
+        @PromptServer.instance.routes.get("/easyllm/db/search")
+        async def db_search(request):
+            """Search across all stored conversations for matching entries.
+
+            Query params:
+                q (str): The search term.
+                max (int, optional): Maximum results (default 50).
+
+            Returns list of matching entries with node_id, session_id,
+            hist_type, role, message/input/output, and timestamp.
+            """
+            try:
+                query = request.query.get("q", "").strip()
+                if not query:
+                    return web.json_response({"results": [], "error": "Missing 'q' parameter"}, status=400)
+
+                max_results = int(request.query.get("max", "50"))
+
+                from .history_db import search_history, is_available
+                if not is_available():
+                    return web.json_response({"results": [], "available": False})
+
+                results = search_history(query, max_results=max_results)
+                return web.json_response({"results": results, "available": True})
+            except Exception as e:
+                logging.warning(f"[LLM Chat DB] Search failed: {e}")
+                return web.json_response(
+                    {"results": [], "error": str(e)}, status=500
+                )
+
+        @PromptServer.instance.routes.get("/easyllm/db/export")
+        async def db_export(request):
+            """Export all conversations as a downloadable file.
+
+            Query params:
+                format (str): ``"md"`` (default) or ``"json"``.
+
+            Returns the formatted export as plain text with appropriate
+            Content-Type and Content-Disposition headers.
+            """
+            try:
+                export_format = request.query.get("format", "md").strip().lower()
+                if export_format not in ("md", "json"):
+                    return web.json_response(
+                        {"error": "Format must be 'md' or 'json'"}, status=400
+                    )
+
+                from .history_db import export_all_history, is_available
+                if not is_available():
+                    return web.json_response({"error": "Database not available"}, status=503)
+
+                content = export_all_history(format=export_format)
+                content_type = "text/markdown" if export_format == "md" else "application/json"
+                filename = f"easyllm_export.{export_format}"
+
+                return web.Response(
+                    text=content,
+                    content_type=content_type,
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                )
+            except Exception as e:
+                logging.warning(f"[LLM Chat DB] Export failed: {e}")
+                return web.json_response(
+                    {"error": str(e)}, status=500
+                )
+
+        # ── Phase 5: Session listing API ─────────────────────────────────
+        @PromptServer.instance.routes.get("/easyllm/db/sessions")
+        async def db_list_sessions(request):
+            """List all stored sessions with metadata.
+
+            Returns a list of sessions with session_id, node_id, hist_type,
+            entry_count, created_at, updated_at, model_name, and preview text.
+            """
+            try:
+                from .history_db import list_sessions, is_available
+                if not is_available():
+                    return web.json_response({"sessions": [], "available": False})
+
+                sessions = list_sessions()
+                return web.json_response({"sessions": sessions, "available": True})
+            except Exception as e:
+                logging.warning(f"[LLM Chat DB] List sessions failed: {e}")
+                return web.json_response(
+                    {"sessions": [], "error": str(e)}, status=500
+                )
+
+        # ── Enhancer Export API ──────────────────────────────────────────
+        @PromptServer.instance.routes.post("/easyllm/export/enhancer")
+        async def export_enhancer(request):
+            """Export selected enhancer entries to a server directory.
+
+            Request body (JSON):
+                entries (list): Enhancer history entries.
+                options (dict): Export configuration — see
+                    ``history_db.export_enhancer_entries()``.
+
+            Returns JSON with success, file_count, output_path, images_written.
+            """
+            try:
+                data = await request.json()
+                entries = data.get("entries", [])
+                options = data.get("options", {})
+
+                if not entries:
+                    return web.json_response(
+                        {"success": False, "error": "No entries to export"},
+                        status=400,
+                    )
+
+                output_dir = options.get("output_dir", "").strip()
+                if not output_dir:
+                    return web.json_response(
+                        {"success": False, "error": "No output directory specified"},
+                        status=400,
+                    )
+
+                # Security: normalize path and prevent traversal
+                output_dir = os.path.abspath(output_dir)
+                # Ensure no traversal beyond root
+                if ".." in output_dir.split(os.sep):
+                    return web.json_response(
+                        {"success": False, "error": "Invalid path (directory traversal detected)"},
+                        status=400,
+                    )
+
+                from .history_db import export_enhancer_entries
+
+                result = export_enhancer_entries(entries, options)
+                status = 200 if result.get("success") else 400
+                return web.json_response(result, status=status)
+
+            except Exception as e:
+                logging.warning(
+                    f"[LLM Chat] Enhancer export failed: {e}"
+                )
+                return web.json_response(
+                    {"success": False, "error": str(e)}, status=500
+                )
+
+        # ── V2: Enhancer Export (Redesigned) ──
+        @PromptServer.instance.routes.post("/easyllm/export/enhancer_v2")
+        async def export_enhancer_v2(request):
+            """Export enhancer entries using the redesigned v2 schema.
+
+            Request body (JSON):
+                entries (list): Enhancer history entries.
+                options (dict): Export configuration — see
+                    ``history_db.export_enhancer_entries_v2()``.
+
+            Returns JSON with success, file_count, output_path, images_written.
+            """
+            try:
+                data = await request.json()
+                entries = data.get("entries", [])
+                options = data.get("options", {})
+
+                if not entries:
+                    return web.json_response(
+                        {"success": False, "error": "No entries to export"},
+                        status=400,
+                    )
+
+                output_dir = options.get("output_dir", "").strip()
+                if not output_dir:
+                    return web.json_response(
+                        {"success": False, "error": "No output directory specified"},
+                        status=400,
+                    )
+
+                # Security: normalize path and prevent traversal
+                output_dir = os.path.abspath(output_dir)
+                if ".." in output_dir.split(os.sep):
+                    return web.json_response(
+                        {"success": False, "error": "Invalid path (directory traversal detected)"},
+                        status=400,
+                    )
+
+                from .history_db import export_enhancer_entries_v2
+
+                result = export_enhancer_entries_v2(entries, options)
+                status = 200 if result.get("success") else 400
+                return web.json_response(result, status=status)
+
+            except Exception as e:
+                logging.warning(
+                    f"[LLM Chat] Enhancer v2 export failed: {e}"
+                )
+                return web.json_response(
+                    {"success": False, "error": str(e)}, status=500
+                )
+
+        # ── Scan files for auto-increment counter ──
+        @PromptServer.instance.routes.get("/easyllm/export/scan_files")
+        async def export_scan_files(request):
+            """Scan a directory for existing numbered files to determine
+            the next auto-increment counter.
+
+            Query params:
+                dir (str): Directory to scan.
+                base_name (str): Base filename (without counter or extension).
+                ext (str): File extension including dot, e.g. ``.txt``.
+
+            Returns JSON with:
+                max_counter (int): Highest existing counter (0 if none).
+                files (list): Matching filenames found.
+            """
+            try:
+                dir_path = request.query.get("dir", "").strip()
+                base_name = request.query.get("base_name", "").strip()
+                ext = request.query.get("ext", ".txt").strip()
+
+                if not dir_path:
+                    return web.json_response(
+                        {"max_counter": 0, "files": []}
+                    )
+
+                dir_path = os.path.abspath(dir_path)
+                if ".." in dir_path.split(os.sep):
+                    return web.json_response(
+                        {"error": "Invalid path"}, status=400
+                    )
+                if not os.path.isdir(dir_path):
+                    return web.json_response(
+                        {"max_counter": 0, "files": []}
+                    )
+
+                import re
+                safe_base = re.escape(base_name) if base_name else ""
+                pattern = re.compile(
+                    rf"^{safe_base}(\d+){re.escape(ext)}$"
+                )
+
+                max_counter = 0
+                matching_files = []
+                try:
+                    for fname in os.listdir(dir_path):
+                        m = pattern.match(fname)
+                        if m:
+                            matching_files.append(fname)
+                            num = int(m.group(1))
+                            if num > max_counter:
+                                max_counter = num
+                except OSError:
+                    pass
+
+                return web.json_response({
+                    "max_counter": max_counter,
+                    "files": matching_files,
+                })
+
+            except Exception as e:
+                return web.json_response(
+                    {"error": str(e)}, status=500
+                )
+
+        @PromptServer.instance.routes.get("/easyllm/export/list_dir")
+        async def export_list_dir(request):
+            """List directory contents for the export folder browser.
+
+            Query params:
+                path (str): Directory to list (default: "" — returns
+                    common base directories).
+
+            Returns JSON with path, parent, contents (list of {name, type}).
+            """
+            try:
+                dir_path = request.query.get("path", "").strip()
+
+                if not dir_path:
+                    # Return common base directories
+                    import folder_paths
+                    common = []
+                    try:
+                        from .history_db import get_db_path
+                        common.append({"name": get_db_path(), "type": "dir"})
+                    except Exception:
+                        pass
+                    try:
+                        common.append({"name": folder_paths.get_output_directory(), "type": "dir"})
+                    except Exception:
+                        pass
+                    try:
+                        common.append({"name": folder_paths.base_path, "type": "dir"})
+                    except Exception:
+                        pass
+                    # Dedup
+                    seen = set()
+                    unique = []
+                    for c in common:
+                        if c["name"] not in seen:
+                            seen.add(c["name"])
+                            unique.append(c)
+                    return web.json_response({
+                        "path": "",
+                        "parent": None,
+                        "contents": unique,
+                    })
+
+                # List the requested directory
+                dir_path = os.path.abspath(dir_path)
+                if ".." in dir_path.split(os.sep):
+                    return web.json_response(
+                        {"error": "Invalid path"}, status=400
+                    )
+                if not os.path.isdir(dir_path):
+                    return web.json_response(
+                        {"error": "Directory not found"}, status=404
+                    )
+                if not os.access(dir_path, os.R_OK):
+                    return web.json_response(
+                        {"error": "Directory not readable"}, status=403
+                    )
+
+                parent = os.path.dirname(dir_path)
+                contents = []
+                try:
+                    for name in sorted(os.listdir(dir_path)):
+                        full = os.path.join(dir_path, name)
+                        try:
+                            if os.path.isdir(full):
+                                contents.append({"name": name, "type": "dir"})
+                        except OSError:
+                            pass
+                except OSError:
+                    pass
+
+                return web.json_response({
+                    "path": dir_path,
+                    "parent": parent if parent != dir_path else None,
+                    "contents": contents,
+                })
+
+            except Exception as e:
+                logging.warning(
+                    f"[LLM Chat] List dir failed: {e}"
+                )
+                return web.json_response(
+                    {"error": str(e)}, status=500
+                )
+
+        @PromptServer.instance.routes.post("/easyllm/export/validate_path")
+        async def export_validate_path(request):
+            """Validate that a path exists and is writable.
+
+            Request body (JSON):
+                path (str): Directory path to validate.
+
+            Returns JSON with valid (bool) and optional error.
+            """
+            try:
+                data = await request.json()
+                dir_path = data.get("path", "").strip()
+
+                if not dir_path:
+                    return web.json_response(
+                        {"valid": False, "error": "No path specified"}
+                    )
+
+                dir_path = os.path.abspath(dir_path)
+                if ".." in dir_path.split(os.sep):
+                    return web.json_response(
+                        {"valid": False, "error": "Invalid path"}
+                    )
+
+                # Does it exist?
+                if not os.path.isdir(dir_path):
+                    # Can we create it?
+                    try:
+                        os.makedirs(dir_path, exist_ok=True)
+                    except OSError as e:
+                        return web.json_response(
+                            {"valid": False, "error": f"Cannot create directory: {e}"}
+                        )
+
+                if not os.access(dir_path, os.W_OK):
+                    return web.json_response(
+                        {"valid": False, "error": "Directory is not writable"}
+                    )
+
+                return web.json_response({"valid": True})
+
+            except Exception as e:
+                return web.json_response(
+                    {"valid": False, "error": str(e)}
+                )
+
         setup_streaming_routes._registered = True
-        logging.info("[LLM Chat] Streaming API routes registered")
+        logging.info("[LLM Chat] Streaming + Database API routes registered")
 
     except Exception as e:
         logging.error(
@@ -780,9 +1610,31 @@ def get_chat_history(unique_id: str) -> list | None:
     """Retrieve and remove stored chat history for a node.
 
     Used by chat_node.py's chat() method during execution.
-    Returns None if no history was stored (first turn or cache miss).
+
+    Phase 2: Falls back to the on-disk database if the ephemeral
+    store is empty (crash recovery after restart).
     """
-    return _history_store.pop(unique_id, None)
+    # ── OLD: primary path — ephemeral store (frontend POSTs before queue) ──
+    history = _history_store.pop(unique_id, None)
+    if history is not None:
+        return history
+
+    # ── NEW: fallback path — on-disk database (crash recovery) ──
+    try:
+        from .history_db import get_history, is_available
+        if is_available():
+            entries = get_history(unique_id, "chat")
+            if entries is not None:
+                logging.info(
+                    f"[LLM Chat DB] History recovered from disk for node {unique_id}"
+                )
+                return entries
+    except Exception as e:
+        logging.warning(
+            f"[LLM Chat DB] Failed to read history for node {unique_id}: {e}"
+        )
+
+    return None
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -880,6 +1732,7 @@ def generate_text(clip, token_dict, max_length=256,
     inner_sd_clip, transformer, original_device = prepare_model_for_generation(
         clip,
         use_layer_offloading=use_layer_offloading,
+        vram_mode=vram_mode,
     )
 
     profiler.end_phase("model_setup")
@@ -1307,6 +2160,7 @@ def execute_gguf_chat_generation(
     repetition_penalty: float = 1.0,
     stop: list[str] | None = None,
     unique_id: str | None = None,
+    response_format: dict | None = None,
 ) -> str:
     """Full generation orchestration for GGUF multimodal (vision) streaming path.
 
@@ -1386,6 +2240,7 @@ def execute_gguf_chat_generation(
             seed=seed,
             repetition_penalty=repetition_penalty,
             stop=stop,
+            response_format=response_format,
         ):
             # Check abort flag (mid-stream cancellation)
             if is_aborted(unique_id):

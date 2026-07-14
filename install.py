@@ -34,6 +34,7 @@ Usage examples:
     python install.py --force                  # Reinstall (skip version check)
 """
 import shutil
+import textwrap
 
 import argparse
 import os
@@ -807,6 +808,53 @@ def get_installed_version(python_path: str) -> str | None:
     return None
 
 
+def get_installed_backend(python_path: str) -> str | None:
+    """Detect the GGML backend of the currently installed llama-cpp-python.
+
+    Probes for backend-specific C extension attributes to determine which
+    GGML backend the wheel was compiled for. This catches the false-positive
+    case where a Vulkan wheel is installed but the script thinks it's CUDA
+    because the version number matches.
+
+    Returns:
+        Backend key ('cu118', 'vulkan', 'cpu', etc.) or None if undetectable.
+    """
+    code = textwrap.dedent("""\
+        import llama_cpp
+        try:
+            from llama_cpp import llama_cpp
+            if hasattr(llama_cpp, 'ggml_cuda_init'):
+                print('CUDA')
+            elif hasattr(llama_cpp, 'ggml_vulkan_init'):
+                print('VULKAN')
+            elif hasattr(llama_cpp, 'ggml_metal_init'):
+                print('METAL')
+            else:
+                print('CPU')
+        except Exception:
+            print('UNKNOWN')
+    """)
+    try:
+        result = subprocess.run(
+            [python_path, '-c', code],
+            capture_output=True, text=True, timeout=15,
+        )
+        backend_str = result.stdout.strip()
+        # Map detected backend strings to our backend keys
+        backend_map = {
+            'CUDA': 'cu118',     # Can't distinguish CUDA 11 vs 12 easily
+            'VULKAN': 'vulkan',
+            'METAL': 'metal',
+            'CPU': 'cpu',
+        }
+        detected = backend_map.get(backend_str)
+        if detected:
+            return detected
+        return None
+    except Exception:
+        return None
+
+
 def upgrade_pip(python_path: str) -> bool:
     """Upgrade pip itself before installing llama-cpp-python.
 
@@ -1026,9 +1074,31 @@ def install_llama_cpp(
             cv = Version(current_version)
             mv = Version(MIN_VISION_VERSION)
             needs_upgrade = cv < mv
+
+            # ── Backend mismatch detection ────────────────────────────────
+            # Check if the installed wheel was compiled for a different
+            # backend than the one we're about to install. This prevents the
+            # false-positive case where a Vulkan (or other backend) binary is
+            # cached but the script thinks nothing needs to change.
+            if not needs_upgrade and not force:
+                installed_backend = get_installed_backend(python_path)
+                if installed_backend and installed_backend != backend:
+                    print(
+                        f"  {PREFIX} llama-cpp-python {current_version} "
+                        f"is installed, but backend differs: "
+                        f"installed={installed_backend}, "
+                        f"requested={backend}"
+                    )
+                    print(
+                        f"  {PREFIX} [INFO] Backend mismatch detected — "
+                        "forcing reinstall"
+                    )
+                    needs_upgrade = True
+
             print(
                 f"  {PREFIX} llama-cpp-python {current_version} is installed"
-                f"{' (vision requires >=' + MIN_VISION_VERSION + ')' if needs_upgrade else ''}"
+                f"{' (vision requires >=' + MIN_VISION_VERSION + ')' if needs_upgrade and cv < mv else ''}"
+                f"{' (backend mismatch' + ')' if needs_upgrade and not (cv < mv) else ''}"
             )
         except Exception:
             # Can't parse version — treat as too old to be safe

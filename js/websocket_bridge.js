@@ -6,7 +6,7 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 import { ComfyWidgets } from "../../../scripts/widgets.js";
-import { createBubbleElement, autoScrollIfNeeded, renderMarkdown, parseThinkBlocks, formatTimingBadge, formatTimingTooltip, detectError, formatErrorMessage, updateContextIndicator } from "./popup.js";
+import { createBubbleElement, autoScrollIfNeeded, renderMarkdown, parseThinkBlocks, parseAttachedTextBlocks, formatTimingBadge, formatTimingTooltip, detectError, formatErrorMessage, updateContextIndicator } from "./popup.js";
 import { saveStreamedAssistantMessage } from "./history_store.js";
 import { showToast } from "./ui_utils.js";
 
@@ -86,21 +86,30 @@ function removeCustomEventListener(apiEvent, handler, fallbackEvent) {
 /**
  * Install the onDrawForeground hook on the LGraphCanvas instance.
  * Chains with any existing hook so we don't break other extensions.
+ *
+ * Re-installs on every call to survive other extensions overwriting
+ * onDrawForeground after us. Uses a function reference check to
+ * prevent chain depth growth when our hook is still intact.
  */
-function ensureCanvasDrawHook() {
-    if (_canvasHookInstalled) return;
+let _ourCanvasHook = null;
 
+function ensureCanvasDrawHook() {
     const lc = app.canvas;
     if (!lc) {
         // Canvas not ready yet; retry on next frame
-        requestAnimationFrame(ensureCanvasDrawHook);
+        if (!_canvasHookInstalled) {
+            requestAnimationFrame(ensureCanvasDrawHook);
+        }
         return;
     }
+
+    // If our hook is still the current one, no need to re-install
+    if (lc.onDrawForeground === _ourCanvasHook) return;
 
     // Save any existing onDrawForeground to chain with it
     const origDraw = lc.onDrawForeground;
 
-    lc.onDrawForeground = function (ctx, canvasEl) {
+    _ourCanvasHook = function (ctx, canvasEl) {
         // Call original hook first (e.g. SelectionBorder)
         if (origDraw) {
             origDraw.call(this, ctx, canvasEl);
@@ -157,6 +166,7 @@ function ensureCanvasDrawHook() {
         }
     };
 
+    lc.onDrawForeground = _ourCanvasHook;
     _canvasHookInstalled = true;
 }
 
@@ -359,8 +369,13 @@ export function startStreamListening(node) {
         // Use parsed.response (including empty string) when set; fall back to fullText
         // only when response is null. Prevents think content duplication during
         // streaming when the tag is open but unclosed.
-        const displayText = parsed.response !== null ? parsed.response : fullText;
+        const afterThink = parsed.response !== null ? parsed.response : fullText;
         const thinkBlock = parsed.thinking;
+
+        // Parse attached text file blocks (after think block removal)
+        const attachParsed = parseAttachedTextBlocks(afterThink);
+        const displayText = attachParsed.displayText;
+        const attachments = attachParsed.attachments;
 
         // Update the text area with markdown rendering
         const textEl = bubble.querySelector(".llm-chat-bubble-text");
@@ -368,6 +383,49 @@ export function startStreamListening(node) {
             // Strip U+FFFD replacement chars from partial multi-byte token decode
             const sanitizedText = displayText.replace(/\ufffd/g, "");
             textEl.innerHTML = renderMarkdown(sanitizedText);
+        }
+
+        // Update or create collapsible attachment sections
+        // Remove any attachment sections that are no longer valid (streaming changed)
+        const existingAttachSections = bubble.querySelectorAll(".llm-chat-attachment");
+        // Collect current attachment filenames for quick lookup
+        const attachKeys = new Set(attachments.map(a => a.filename));
+        for (const section of existingAttachSections) {
+            const filename = section.querySelector(".llm-chat-attachment-summary")?.textContent?.replace(/^📄 /, "") || "";
+            if (!attachKeys.has(filename)) {
+                section.remove();
+            }
+        }
+
+        for (const att of attachments) {
+            let attSection = bubble.querySelector(`.llm-chat-attachment[data-filename="${CSS.escape(att.filename)}"]`);
+            if (!attSection) {
+                // Create new attachment section
+                const details = document.createElement("details");
+                details.className = "llm-chat-attachment";
+                details.setAttribute("data-filename", att.filename);
+                const summary = document.createElement("summary");
+                summary.className = "llm-chat-attachment-summary";
+                summary.textContent = `📄 ${att.filename}`;
+                details.appendChild(summary);
+                const attContent = document.createElement("div");
+                attContent.className = "llm-chat-attachment-content";
+                attContent.textContent = att.content;
+                details.appendChild(attContent);
+                // Insert after label, before text
+                const label = bubble.querySelector(".llm-chat-bubble-label");
+                if (label) {
+                    label.after(details);
+                } else {
+                    bubble.prepend(details);
+                }
+            } else {
+                // Update existing attachment content
+                const attContent = attSection.querySelector(".llm-chat-attachment-content");
+                if (attContent) {
+                    attContent.textContent = att.content;
+                }
+            }
         }
 
         // Update or create the collapsible thinking section
@@ -457,7 +515,7 @@ export function startStreamListening(node) {
             autoScrollIfNeeded(historyEl);
         },
         // onDone — finalize streaming: flush render, persist to history
-        (detail) => {
+        async (detail) => {
             // Flush any pending render so final content is up-to-date
             _pendingRender = false;
             updateStreamingBubble();
@@ -510,9 +568,26 @@ export function startStreamListening(node) {
             node._currentStreamBubble = null;
 
             // ── Persist streamed response to chat history ──
-            // Persists via streaming path when onExecuted is unavailable. Error flag restores error styling on reload.
+            // This is the single canonical persistence path for assistant messages.
+            // The onExecuted() path was removed — see plans/server-db-cleanup-remaining-code.md.
             if (node._streamingAccumulatedText) {
                 saveStreamedAssistantMessage(node, node._streamingAccumulatedText, node._lastTiming, isError);
+
+                // ── Server persistence (primary path) ──
+                // Persists to the database via incremental append.
+                const lastEntry = node._chatHistory?.[node._chatHistory.length - 1];
+                if (lastEntry && lastEntry.role === "assistant") {
+                    try {
+                        await fetch(`/easyllm/db/history/${node.id}/append`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ entry: lastEntry, type: "chat" }),
+                        });
+                    } catch (err) {
+                        console.error(`[LLM Chat] Failed to persist streamed response:`, err);
+                    }
+                }
+
                 node._streamingAccumulatedText = "";
             }
 
@@ -638,24 +713,3 @@ export function setupStreamingPreview(showtextNode, upstreamNodeIds) {
     if (!showtextNode._streamPreviewHandlers) showtextNode._streamPreviewHandlers = [];
     showtextNode._streamPreviewHandlers.push(handler);
 }
-
-// ── Background Model Pre-load Notification ─────────────────────────
-// Listens for "easyllm_model_ready" WebSocket events pushed by the
-// /easyllm/preload_model endpoint on background pre-load completion.
-// Displays a toast notification with status and model name.
-api.addEventListener("easyllm_model_ready", (event) => {
-    const detail = event.detail || event;
-    if (!detail) return;
-
-    if (detail.status === "ready") {
-        const displayName = detail.model_path
-            ? detail.model_path.split(/[\\/]/).pop()
-            : "Model";
-        showToast(`✅ ${displayName} loaded — ready to generate`, "success", 3000);
-    } else if (detail.status === "error") {
-        const displayName = detail.model_path
-            ? detail.model_path.split(/[\\/]/).pop()
-            : "Model";
-        showToast(`❌ ${displayName} failed to load: ${detail.error || "unknown error"}`, "error", 5000);
-    }
-});

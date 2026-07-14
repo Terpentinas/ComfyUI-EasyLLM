@@ -3,21 +3,23 @@
  *
  * - createButtonDOMWidget: Creates the "Open LLM Lab & Chat" / "📋 View Output History"
  *   and "Manage Prompts" buttons as a LiteGraph DOM widget.
- * - hideCanvasWidgets: Hides setting widget rows (prompt_template,
- *   system_prompt_text, max_length, temperature) from the canvas node.
+ * - hideCanvasWidgets: Hides setting widget rows (max_length, temperature, etc.)
+ *   from the canvas node.
  * - refreshButtonLabel: Updates button text/behavior when mode changes dynamically.
  */
 
-import { VISIBLE_WIDGET_NAMES, VISIBLE_WIDGET_NAMES_GGUF } from "./constants.js";
-import { openChatPopup, openOutputHistoryPopup, openModelBrowserPopup } from "./popup.js";
+import { VISIBLE_WIDGET_NAMES, VISIBLE_WIDGET_NAMES_GGUF, getWidgetEl } from "./constants.js";
+import { openChatPopup, openOutputHistoryPopup, openModelBrowserPopup, openSettingsPopup, openDatabaseManagerPopup } from "./popup.js";
 import { openPromptManagerDialog } from "./editor.js";
 
 // ────────────────────────────────────────────────────────────────────────
 // Canvas Node: Hide widget rows not in VISIBLE_WIDGET_NAMES
 // ────────────────────────────────────────────────────────────────────────
 
-export function hideCanvasWidgets(node) {
-    const visibleNames = node.isEasyLLMGGUF ? VISIBLE_WIDGET_NAMES_GGUF : VISIBLE_WIDGET_NAMES;
+export function hideCanvasWidgets(node, visibleNames) {
+    if (!visibleNames) {
+        visibleNames = node.isEasyLLMGGUF ? VISIBLE_WIDGET_NAMES_GGUF : VISIBLE_WIDGET_NAMES;
+    }
     for (const w of (node.widgets || [])) {
         if (visibleNames.includes(w.name)) continue;
         if (w.name.startsWith("_")) continue; // Hidden widgets already invisible
@@ -26,8 +28,14 @@ export function hideCanvasWidgets(node) {
         // Override type/computeSize/draw to hide from canvas rendering (survives serialization).
         w.type = "converted-widget";
         w.hidden = true;
-        w.computeSize = () => [0, -4];
+        w.computeSize = () => [0, 0];
         w.draw = () => {};
+        // Also hide the widget's DOM element so it contributes zero layout space
+        const el = getWidgetEl(w);
+        if (el) {
+            el.classList.add("llm-widget-hidden");
+            el.style.display = "none";
+        }
     }
 }
 
@@ -47,20 +55,11 @@ export function hideCanvasWidgets(node) {
  * @param {Function} opts.onClick - Click handler
  * @returns {HTMLButtonElement}
  */
-function createStyledButton({ text, title, bg, border, hoverBg, onClick }) {
+function createStyledButton({ text, title, onClick, extraClass }) {
     const btn = document.createElement("button");
+    btn.className = ["llm-canvas-btn", extraClass].filter(Boolean).join(" ");
     btn.textContent = text;
     btn.title = title;
-    btn.style.cssText = [
-        "flex: 1; color: #e0e0f0;",
-        `background: ${bg};`,
-        `border: 1px solid ${border}; border-radius: 4px;`,
-        "padding: 6px 8px; cursor: pointer;",
-        "font-family: monospace; font-size: 12px;",
-        "transition: background 0.1s;",
-    ].join(" ");
-    btn.addEventListener("mouseenter", () => { btn.style.background = hoverBg; });
-    btn.addEventListener("mouseleave", () => { btn.style.background = bg; });
     btn.type = "button";
     btn.addEventListener("click", (e) => {
         e.preventDefault();
@@ -93,9 +92,15 @@ export function createButtonDOMWidget(node) {
         console.debug(`[LLM Chat] Node ${nodeId} — Re-creating detached button DOM widget`);
     }
 
-    // Create container for both buttons (styling via CSS class .llm-chat-button-container)
+    // Create container for both rows (styling via CSS class .llm-chat-button-container)
     const container = document.createElement("div");
     container.className = "llm-chat-button-container";
+
+    // Create two rows inside the container
+    const rowTop = document.createElement("div");
+    rowTop.className = "llm-button-row llm-button-row-top";
+    const rowBottom = document.createElement("div");
+    rowBottom.className = "llm-button-row llm-button-row-bottom";
 
     // ── EasyLLM / Output History button — label/behavior depends on mode ──
     const isLLMChat = node.type === "EasyLLM" || node.comfyClass?.nodeData?.name === "EasyLLM";
@@ -104,23 +109,12 @@ export function createButtonDOMWidget(node) {
         const modeW = node.widgets?.find(w => w.name === "mode");
         const isEnhancer = modeW && modeW.value === "enhancer";
 
-        // ── Mode indicator pill ──
-        const modePill = document.createElement("span");
-        modePill.className = "llm-mode-pill";
-        modePill.textContent = isEnhancer ? "✨" : (isGGUF ? "⚡" : "💬");
-        modePill.title = isEnhancer
-            ? "Enhancer mode: direct prompt-to-output pipeline"
-            : (isGGUF ? "GGUF Chat mode: interactive conversation via popup (C++ engine)" : "Chat mode: interactive conversation via popup");
-        container.appendChild(modePill);
-
+        // ── Row 1: Primary action buttons (Open Chat, Models, mode pill) ──
         const labBtn = createStyledButton({
             text: isEnhancer ? "📋 View History" : "💬 Open Chat",
             title: isEnhancer
                 ? "View, scroll, and copy recent enhanced prompt outputs"
                 : "Open the interactive chat popup",
-            bg: isGGUF ? "#6a3a8a" : "#3a5a8a",
-            border: isGGUF ? "#8a5aaa" : "#5a7aaa",
-            hoverBg: isGGUF ? "#7a4a9a" : "#4a6a9a",
             onClick: () => {
                 if (isEnhancer) {
                     openOutputHistoryPopup(node);
@@ -128,36 +122,80 @@ export function createButtonDOMWidget(node) {
                     openChatPopup(node);
                 }
             },
+            extraClass: "llm-chat-main-btn",
         });
-        container.appendChild(labBtn);
+        rowTop.appendChild(labBtn);
 
         // 📁 Models button (GGUF-only — opens model browser popup)
         if (isGGUF) {
             const modelBtn = createStyledButton({
                 text: "📁 Models",
                 title: "Browse and select GGUF model",
-                bg: "#6a3a8a",
-                border: "#8a5aaa",
-                hoverBg: "#7a4a9a",
                 onClick: () => openModelBrowserPopup(node),
             });
-            container.appendChild(modelBtn);
+            rowTop.appendChild(modelBtn);
         }
-    }
 
-    // "Manage Prompts" button (nodes with prompt_template)
-    const hasTemplate = node.widgets?.find(w => w.name === "prompt_template");
-    if (hasTemplate) {
+        // ── Mode toggle arrow badge (right side of top row) ──
+        const modePill = document.createElement("span");
+        modePill.className = "llm-mode-pill";
+        modePill.textContent = isEnhancer ? "<" : ">";
+        modePill.title = isEnhancer
+            ? "Enhancer mode - click to switch to Chat"
+            : "Chat mode - click to switch to Enhancer";
+        modePill.dataset.mode = modeW?.value || "chat";
+        rowTop.appendChild(modePill);
+
+        // ── Mode toggle: click toggles chat ↔ enhancer ──
+        modePill.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const modeW2 = node.widgets?.find(w => w.name === "mode");
+            if (!modeW2) return;
+            const newVal = modeW2.value === "enhancer" ? "chat" : "enhancer";
+            modeW2.value = newVal;
+            if (modeW2.callback) modeW2.callback(newVal);
+        });
+
+        // ── Row 2: Utility action buttons (Settings, Database, Prompt Library) ──
+        // ⚙️ Gear icon — opens settings-only popup (available in all modes)
+        const settingsBtn = document.createElement("button");
+        settingsBtn.className = "llm-settings-btn";
+        settingsBtn.textContent = "⚙️";
+        settingsBtn.title = "Open settings (temperature, VRAM, sampling params)";
+        settingsBtn.type = "button";
+        settingsBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openSettingsPopup(node);
+        });
+        rowBottom.appendChild(settingsBtn);
+
+        // 🗄️ DataBase icon — opens database manager popup (available in all modes)
+        const dbBtn = document.createElement("button");
+        dbBtn.className = "llm-settings-btn";
+        dbBtn.textContent = "🗄️ DataBase";
+        dbBtn.title = "Open database manager";
+        dbBtn.type = "button";
+        dbBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openDatabaseManagerPopup(node);
+        });
+        rowBottom.appendChild(dbBtn);
+
+        // 📚 Prompt Library button (available on all EasyLLM/EasyLLMGGUF nodes)
         const mgrBtn = createStyledButton({
-            text: "⚙ Manage Prompts...",
-            title: "Add, edit, or delete system prompt templates",
-            bg: "#3a3a5a",
-            border: "#5a5a7a",
-            hoverBg: "#4a4a7a",
+            text: "📚 Prompt Library",
+            title: "Open the Prompt Library to manage system prompt templates",
             onClick: () => openPromptManagerDialog(),
         });
-        container.appendChild(mgrBtn);
+        rowBottom.appendChild(mgrBtn);
     }
+
+    // Append rows to container
+    container.appendChild(rowTop);
+    container.appendChild(rowBottom);
 
     // Create the DOM widget — DOM is created immediately.
     // getMinHeight reserves vertical space; hideOnZoom: false keeps buttons visible when zoomed out.
@@ -165,7 +203,7 @@ export function createButtonDOMWidget(node) {
     const widget = node.addDOMWidget("llm_chat_buttons", "llm_chat_buttons", container, {
         serialize: false,
         hideOnZoom: false,
-        getMinHeight: () => 40,
+        getMinHeight: () => 80,
     });
     console.debug(`[LLM Chat] Node ${nodeId} — addDOMWidget returned:`, widget ? `widget type=${widget.type}, element exists=${!!widget.element}, element.isConnected=${widget.element?.isConnected}` : "UNDEFINED!");
 
@@ -196,7 +234,7 @@ export function createButtonDOMWidget(node) {
 export function refreshButtonLabel(node) {
     const container = node.widgets?.find(w => w.name === "llm_chat_buttons");
     if (!container?.element) return;
-    const btn = container.element.querySelector("button");
+    const btn = container.element.querySelector(".llm-chat-main-btn");
     if (!btn) return;
 
     const modeW = node.widgets?.find(w => w.name === "mode");
@@ -205,16 +243,12 @@ export function refreshButtonLabel(node) {
 
     // Create replacement button with correct label and handler
     const newBtn = document.createElement("button");
+    newBtn.className = "llm-canvas-btn llm-chat-main-btn";
     newBtn.textContent = isEnhancer ? "📋 View History" : "💬 Open Chat";
     newBtn.title = isEnhancer
         ? "View, scroll, and copy recent enhanced prompt outputs"
         : "Open the interactive chat popup";
-    newBtn.style.cssText = btn.style.cssText;
     newBtn.type = "button";
-    const hoverBg = isGGUF ? "#7a4a9a" : "#4a6a9a";
-    const normalBg = isGGUF ? "#6a3a8a" : "#3a5a8a";
-    newBtn.addEventListener("mouseenter", () => { newBtn.style.background = hoverBg; });
-    newBtn.addEventListener("mouseleave", () => { newBtn.style.background = normalBg; });
     newBtn.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -226,4 +260,16 @@ export function refreshButtonLabel(node) {
     });
 
     btn.parentNode.replaceChild(newBtn, btn);
+
+    // Sync the mode badge arrow and color
+    const pill = container.element.querySelector(".llm-mode-pill");
+    if (pill) {
+        const modeW3 = node.widgets?.find(w => w.name === "mode");
+        const isEnh3 = modeW3 && modeW3.value === "enhancer";
+        pill.textContent = isEnh3 ? "<" : ">";
+        pill.title = isEnh3
+            ? "Enhancer mode - click to switch to Chat"
+            : "Chat mode - click to switch to Enhancer";
+        pill.dataset.mode = isEnh3 ? "enhancer" : "chat";
+    }
 }

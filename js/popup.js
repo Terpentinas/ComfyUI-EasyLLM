@@ -22,11 +22,11 @@ export {
     updateScrollState,
     scrollToBottom,
     autoScrollIfNeeded,
-    createScrollToBottomBtn,
     formatTimestamp,
     formatTimingBadge,
     formatTimingTooltip,
     parseThinkBlocks,
+    parseAttachedTextBlocks,
     estimateTokens,
     estimateContextTokens,
 } from "./popup_utils.js";
@@ -37,6 +37,7 @@ export {
     exportEnhancerHistory,
     downloadExport,
     abortStreaming,
+    openEnhancerExportDialog,
     createBubbleElement,
     renderPopupHistory,
     pasteToInput,
@@ -49,7 +50,11 @@ export {
     hideTypingIndicator,
     getModelName,
     openImagePicker,
+    handleDroppedFile,
     removeAttachedImage,
+    openLightbox,
+    closeLightbox,
+    buildImagesSection,
 } from "./popup_bubble.js";
 
 // ── Popup modals (open/close chat, enhancer history) ──
@@ -57,6 +62,8 @@ export {
     openChatPopup,
     closeChatPopup,
     openOutputHistoryPopup,
+    openSettingsPopup,
+    closeSettingsPopup,
 } from "./popup_chat.js";
 
 // ── Model browser popup ──
@@ -64,3 +71,8 @@ export {
     openModelBrowserPopup,
     closeModelBrowserPopup,
 } from "./popup_model_browser.js";
+
+// ── Database Manager popup ──
+export {
+    openDatabaseManagerPopup,
+} from "./db_manager.js";

@@ -13,13 +13,13 @@ with CLIP Text Encode downstream.
 import functools
 import json
 import logging
+import threading
 import time
+import uuid
 
 from .utils import (
-    auto_seed,
     supports_generation,
     resolve_text,
-    resolve_system_prompt,
     format_prompt_by_template,
     clean_generated_text,
     detect_chat_template_from_metadata,
@@ -30,13 +30,37 @@ from .utils import (
     _UNIVERSAL_ROLE_STOP_TOKENS,
 )
 from .streaming import execute_chat_generation
-from .prompt_manager import get_prompt_names, get_prompt_by_name
+from .config import REATTACH_IMAGES
 
 # Cache: unique_id -> (cleaned_text, raw_text); preserves think tags in raw_text
 _cache = {}
 
 # GGUF cache: avoids unique_id collisions with CLIP _cache
 _cache_gguf: dict = {}
+
+# Module-level cache for no-wire upload images: unique_id → IMAGE tensor.
+# Populated on first execution when image_filename has a value but no
+# IMAGE tensor is wired. Retrieved on cache replay when image_filename
+# may have been cleared by the frontend between queues.
+_uploaded_image_tensor_cache: dict = {}
+
+# Module-level cache: unique_id → IMAGE tensor for edit_image fallback.
+# Populated whenever a non-None image passes through image_output.
+# Used as fallback when the LLM outputs edit_image but no wired/uploaded
+# image is provided — Flux Klein needs a source image to edit.
+_last_pipeline_image_cache: dict = {}
+
+# Module-level mapping: session_uuid → LLM node's unique_id.
+# Populated by EasyLLM.chat() and EasyLLMGGUF.generate() when they
+# generate a session_uuid. Read by Image Capture to determine which
+# LLM node's _last_pipeline_image_cache to update with generated output.
+_session_to_node: dict[str, str] = {}
+
+# Module-level mapping: node unique_id → iterative_refinement enabled.
+# Populated by EasyLLM.chat() and EasyLLMGGUF.generate() from the
+# iterative_refinement BOOLEAN widget. Read by Image Capture to decide
+# whether to update _last_pipeline_image_cache with generated output.
+_iterative_refinement_flags: dict[str, str] = {}
 
 # Shared error message for models without generation support
 NO_GENERATION_ERROR = (
@@ -63,6 +87,54 @@ LLAMA_NOT_INSTALLED_ERROR = (
     "Then restart ComfyUI."
 )
 
+
+# ────────────────────────────────────────────────────────────────────────────
+# Phase 3: Image filename resolver for prompt building
+# ────────────────────────────────────────────────────────────────────────────
+
+def _resolve_history_image(entry: dict) -> str | None:
+    """Resolve an image reference from a history entry to a base64 data URI.
+
+    Handles three cases (in priority order):
+    1. ``images`` array with ``filename`` field → load from DB
+    2. ``images`` array with ``data`` field → use as-is (backward compat)
+    3. Singular ``image`` field → may be filename or base64
+
+    Returns:
+        Base64 data URI string (e.g. ``data:image/png;base64,...``),
+        or ``None`` if no image is found or resolution fails.
+    """
+    # Case 1: images array (Phase 3+ format with filename)
+    entry_images = entry.get("images", [])
+    # Only re-attach user-uploaded (input) images, not auto-generated ones
+    input_images = [img for img in entry_images if isinstance(img, dict) and img.get("type", "input") == "input"]
+    if input_images:
+        img = input_images[0]
+        filename = img.get("filename") if isinstance(img, dict) else None
+        data = img.get("data") if isinstance(img, dict) else None
+        if filename:
+            try:
+                from .history_db import get_image_data, is_available
+                if is_available():
+                    image_bytes = get_image_data(filename)
+                    if image_bytes:
+                        import base64
+                        b64 = base64.b64encode(image_bytes).decode("utf-8")
+                        return f"data:image/png;base64,{b64}"
+            except Exception:
+                pass  # Fall through to data field
+        if data:
+            return data
+        return None
+
+    # Case 2: Singular image field (backward compat)
+    image = entry.get("image", "")
+    if image:
+        return image
+
+    return None
+
+
 class EasyLLM:
     """
     Interactive chat with the LLM model loaded inside a CLIP object.
@@ -72,11 +144,8 @@ class EasyLLM:
     Sampling parameters (temperature, top_k, top_p, repetition_penalty) are
     automatically tuned based on the detected model size for optimal quality.
 
-    System prompt can come from one of four sources (priority order):
-    1. A connected LLMSystemPromptSelector node (system_prompt forceInput)
-    2. A selected template from the prompt_template dropdown
-    3. Custom text typed in the system_prompt_text widget
-    4. The hardcoded default from utils.py (when all are empty)
+    System prompt is provided exclusively via the ``system_prompt`` forceInput socket.
+    Connect from LLM_PromptSelect or any text node to set the system prompt.
 
     Text input can come from two sources (priority order):
     1. A connected node's STRING output (text_input forceInput socket)
@@ -89,14 +158,12 @@ class EasyLLM:
 
     @classmethod
     def INPUT_TYPES(cls):
-        # Load prompt names from JSON
-        prompt_names = get_prompt_names()
         return {
             "required": {
-            },
-            "optional": {
                 # Section 1: Setup — What you need to get started
                 "clip": ("CLIP", {"tooltip": "The CLIP model containing an LLM text encoder (Anima, Z-Image, Flux Klein, etc.)"}),
+            },
+            "optional": {
                 "mode": (["chat", "enhancer"], {
                     "default": "chat",
                     "tooltip": "chat: Interactive conversation with popup + history. enhancer: Direct prompt-to-output, wire to CLIP Text Encode.",
@@ -109,22 +176,18 @@ class EasyLLM:
                     "default": "",
                     "tooltip": "Your message to the LLM. Managed via the LLM Lab popup.",
                 }),
-                "prompt_template": (prompt_names, {
-                    "default": prompt_names[0] if prompt_names else "Custom",
-                    "tooltip": "Select a system prompt template, or Custom to write your own below.",
-                }),
-                "system_prompt_text": ("STRING", {
-                    "multiline": True,
-                    "dynamicPrompts": False,
-                    "default": "",
-                    "tooltip": "Type a custom system prompt. Used when prompt_template is 'Custom'.",
-                }),
                 "system_prompt": ("STRING", {
                     "forceInput": True,
                     "multiline": True,
                     "dynamicPrompts": False,
                     "default": "",
-                    "tooltip": "Connect from LLMSystemPromptSelector. Overrides dropdown and custom text.",
+                    "tooltip": "Connect from LLM_PromptSelect or any text node to set the system prompt. This is the only way to provide a system prompt.",
+                }),
+                "system_prompt_popup": ("STRING", {
+                    "multiline": True,
+                    "dynamicPrompts": False,
+                    "default": "",
+                    "tooltip": "Pop-up selected system prompt. Used as fallback when system_prompt forceInput socket is not connected.",
                 }),
 
                 # Section 3: Socket Inputs — External text pipe connections
@@ -149,11 +212,12 @@ class EasyLLM:
                     "tooltip": "Maximum tokens to generate",
                 }),
                 "seed": ("INT", {
-                    "default": 0,
+                    "default": 42,
                     "min": 0,
                     "max": 0xFFFFFFFF,
                     "step": 1,
-                    "tooltip": "Random seed. 0 = auto-randomize each generation.",
+                    "control_after_generate": True,
+                    "tooltip": "The random seed used for generation. 🎲 toggle controls auto-randomize.",
                 }),
 
                 # Section 5: Hardware (Less Used) — Advanced system settings
@@ -167,27 +231,37 @@ class EasyLLM:
                     "default": False,
                     "tooltip": "Lock model memory to prevent OS swapping. Stabilizes shared RAM performance. Recommended for keep_loaded mode.",
                 }),
+                "iterative_refinement": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "When ON, each edit_image uses the previous generation result as its source image. When OFF, all edits use the original uploaded image.",
+                }),
+
+                # Section 6: Vision / Multimodal (Optional) — Image input support
+                "image": ("IMAGE", {
+                    "forceInput": True,
+                    "tooltip": "Connect an image from Load Image node. Stored in history for display; vision processing deferred (CLIP path).",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
             },
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "CLIP",)
-    RETURN_NAMES = ("text", "raw_text", "clip",)
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "CLIP", "IMAGE",)
+    RETURN_NAMES = ("text", "raw_text", "trigger_prompt", "clip", "image_output",)
     OUTPUT_TOOLTIPS = (
         "The generated response text (cleaned, with artifacts removed)",
         "The raw generated text (uncleaned, as decoded from the model)",
+        "Structured JSON command when the model outputs an action "
+        "(generate_image, edit_image, just_chat). Empty string otherwise. "
+        "Requires ENABLE_TRIGGER_PROMPT=True in config.",
         "The original CLIP model, passed through for downstream use",
+        "Passthrough of the connected input IMAGE tensor. "
+        "Null if no image is wired. Wire to KSampler/Flux Klein for img2img editing.",
     )
     FUNCTION = "chat"
     CATEGORY = "EasyLLM"
     DESCRIPTION = "Chat with the LLM model loaded inside a CLIP text encoder. Sampling params auto-tune for model size. Supports system prompt templates."
-
-    def _resolve_system_prompt(self, system_prompt, prompt_template, system_prompt_text):
-        """Resolve system prompt via utils.resolve_system_prompt() (4-source priority)."""
-        from .utils import resolve_system_prompt as _resolve
-        return _resolve(system_prompt, prompt_template, system_prompt_text)
 
     def _resolve_text(self, text_input, text):
         """Resolve input text via utils.resolve_text() (2-source priority)."""
@@ -195,20 +269,30 @@ class EasyLLM:
         return _resolve(text_input, text)
 
     def chat(self, clip=None, text="", text_input="", mode="chat", system_prompt="",
-             prompt_template="Custom", system_prompt_text="", max_length=768,
-             temperature="auto", seed=0, vram_mode="unload", use_mlock=False,
-             unique_id=None):
+             max_length=768, temperature="auto", seed=0, vram_mode="unload",
+             use_mlock=False, iterative_refinement=False, unique_id=None,
+             image=None, system_prompt_popup=""):
         """
         Execute a chat interaction with the loaded CLIP model.
 
         Auto-mode: When effective text is empty (Queue Prompt without popup or chain),
         returns cached output from `_cache[unique_id]` without GPU generation.
 
+        Accepts optional ``image`` IMAGE tensor for storage in the UI payload
+        (for history display). Actual vision processing is deferred (requires GGUF path).
+
         Returns:
             tuple: (cleaned_text, raw_text, clip)
         """
-        def _ui_result(text_val, raw_val, clip, system_prompt_val=""):
-            """Wrap text + CLIP in ui dict and result tuple; logs think-tag diagnostics."""
+        def _ui_result(text_val, raw_val, clip, system_prompt_val="",
+                       b64_image=None,
+                       trigger_prompt_val=""):
+            """Wrap text + CLIP in ui dict and result tuple; logs think-tag diagnostics.
+
+            Phase 3: Images are saved to the on-disk database as separate PNG files.
+            The response payload includes both ``filename`` (preferred) and ``data``
+            (base64 fallback) so frontend can serve from DB file path.
+            """
             if text_val != raw_val and ("<think>" in raw_val or "<|channel>" in raw_val):
                 logging.debug(
                     f"[LLM Chat] _ui_result: text={len(text_val)} chars (no think), "
@@ -219,14 +303,44 @@ class EasyLLM:
                     f"[LLM Chat] _ui_result: BOTH outputs contain think tags — "
                     f"raw_text not properly separated!"
                 )
+            ui_payload = {
+                "text": [text_val],
+                "raw_text": [raw_val],
+                "input_text": [effective_text],
+                "system_prompt": [system_prompt_val],
+                "session_uuid": [session_uuid],
+                "trigger_prompt": [trigger_prompt_val],
+            }
+            # Build images array from individual params
+            images = []
+            if b64_image:
+                img_entry = {"type": "input", "data": b64_image}
+                # ── Phase 3: Save image to DB and attach filename ──
+                try:
+                    from .history_db import (save_image_from_base64, is_available,
+                                             save_image_force)
+                    from .utils import base64_to_bytes
+                    if is_available():
+                        db_fn = save_image_from_base64(b64_image, "input")
+                    else:
+                        # Force-save even when DB is disabled
+                        db_fn = save_image_force(base64_to_bytes(b64_image), "input")
+                    if db_fn:
+                        img_entry["filename"] = db_fn
+                except Exception:
+                    pass  # Non-critical — image without filename won't show in canvas
+                # Strip data from UI payload to prevent ComfyUI from constructing
+                # oversized /api/view?type=input&data=... URLs that exceed aiohttp's
+                # 8190-byte request line limit.
+                ui_entry = {"type": img_entry["type"]}
+                if img_entry.get("filename"):
+                    ui_entry["filename"] = img_entry["filename"]
+                images.append(ui_entry)
+            if images:
+                ui_payload["images"] = images
             return {
-                "ui": {
-                    "text": [text_val],
-                    "raw_text": [raw_val],
-                    "input_text": [effective_text],
-                    "system_prompt": [system_prompt_val],
-                },
-                "result": (text_val, raw_val, clip),
+                "ui": ui_payload,
+                "result": (text_val, raw_val, trigger_prompt_val, clip, image),
             }
 
         # — RESOLVE EFFECTIVE TEXT —
@@ -240,10 +354,44 @@ class EasyLLM:
         else:
             # Chat mode: return cached output when text is empty (auto-mode)
             if not effective_text or not effective_text.strip():
+                session_uuid = str(uuid.uuid4())
+                # ── Register session_uuid → node_id mapping ──
+                # Cache replay overwrites trigger_prompt's session_uuid;
+                # Image Capture receives this one via Trigger Router.
+                _session_to_node[session_uuid] = unique_id
+                _iterative_refinement_flags[unique_id] = iterative_refinement
                 cached = _cache.get(unique_id, None)
                 if cached:
                     cleaned, raw = cached
-                    return _ui_result(cleaned, raw, clip)
+                    # ── Re-extract trigger_prompt from cached raw_text ──
+                    from .config import ENABLE_TRIGGER_PROMPT
+                    trigger_prompt_val = ""
+                    if ENABLE_TRIGGER_PROMPT:
+                        trigger_prompt_val = _parse_trigger_prompt(raw)
+                        if trigger_prompt_val:
+                            try:
+                                tp = json.loads(trigger_prompt_val)
+                                tp["session_uuid"] = session_uuid
+                                trigger_prompt_val = json.dumps(tp)
+                            except Exception:
+                                pass
+                    # ── Fallback: use last pipeline image for edit_image (cache replay) ──
+                    if image is None and trigger_prompt_val:
+                        try:
+                            tp = json.loads(trigger_prompt_val)
+                            if tp.get("action") == "edit_image":
+                                cached_img = _last_pipeline_image_cache.get(unique_id)
+                                if cached_img is not None:
+                                    image = cached_img
+                                    logging.info(
+                                        f"[LLM Chat] edit_image fallback (cache replay): "
+                                        f"using cached pipeline image for node={unique_id} "
+                                        f"(shape={image.shape})"
+                                    )
+                        except Exception:
+                            pass
+                    return _ui_result(cleaned, raw, clip,
+                                      trigger_prompt_val=trigger_prompt_val)
                 return _ui_result("", "", clip)
 
         # — CLIP CONNECTION CHECK —
@@ -263,21 +411,39 @@ class EasyLLM:
         if not supports_generation(clip):
             return _ui_result(NO_GENERATION_ERROR, NO_GENERATION_ERROR, clip)
 
-        seed = auto_seed(seed)
+        # Generate per-execution session UUID for image capture reconciliation
+        session_uuid = str(uuid.uuid4())
+        # ── Register session_uuid → node_id mapping ──
+        # Full-generation path; registered as fallback in case the
+        # auto-queue doesn't fire and this session_uuid reaches
+        # downstream nodes directly.
+        _session_to_node[session_uuid] = unique_id
+        _iterative_refinement_flags[unique_id] = iterative_refinement
 
         # Retrieve chat history from server-side store (populated by frontend
         # before queue). Returns None on first turn — format_prompt() handles this.
+        # Only fetch in chat mode — enhancer mode has no history.
         parsed_history = None
-        try:
-            from .streaming import get_chat_history
-            parsed_history = get_chat_history(unique_id)
-        except Exception as e:
-            logging.warning(f"[LLM Chat] Failed to retrieve history for node {unique_id}: {e}")
+        if mode == "chat":
+            try:
+                from .streaming import get_chat_history
+                parsed_history = get_chat_history(unique_id)
+            except Exception as e:
+                logging.warning(f"[LLM Chat] Failed to retrieve history for node {unique_id}: {e}")
+
+        # — CONVERT IMAGE TENSORS TO BASE64 (for UI/ history storage) —
+        b64_image = None
+        if image is not None:
+            try:
+                from .utils import tensor_to_base64_png
+                b64_image = tensor_to_base64_png(image)
+            except Exception as e:
+                logging.warning(f"[LLM Chat] Failed to convert image to base64: {e}")
 
         try:
-            effective_system_prompt = self._resolve_system_prompt(
-                system_prompt, prompt_template, system_prompt_text
-            )
+            effective_system_prompt = system_prompt if system_prompt.strip() else ""
+            if not effective_system_prompt:
+                effective_system_prompt = (system_prompt_popup or "").strip()
 
             generated_text, raw_text = execute_chat_generation(
                 clip=clip,
@@ -293,16 +459,72 @@ class EasyLLM:
                 chat_history=parsed_history,
             )
 
+            # — EXTRACT TRIGGER PROMPT (if enabled) —
+            from .config import ENABLE_TRIGGER_PROMPT
+            trigger_prompt_val = ""
+            if ENABLE_TRIGGER_PROMPT:
+                trigger_prompt_val = _parse_trigger_prompt(raw_text)
+                if trigger_prompt_val:
+                    # Embed session_uuid for downstream Image Capture node
+                    try:
+                        tp = json.loads(trigger_prompt_val)
+                        tp["session_uuid"] = session_uuid
+                        trigger_prompt_val = json.dumps(tp)
+                    except Exception:
+                        pass  # Non-critical — image capture won't work without session_uuid
+
             # Cache for auto-mode replay (preserves think tags in raw_text)
             _cache[unique_id] = (generated_text, raw_text)
 
-            return _ui_result(generated_text, raw_text, clip, effective_system_prompt)
+            # ── Update last pipeline image cache ──
+            # Populated whenever a non-None image passes through.
+            # Used as fallback on next turn when LLM outputs edit_image
+            # but no new wired/uploaded image is provided.
+            if image is not None:
+                _last_pipeline_image_cache[unique_id] = image
+                logging.debug(
+                    f"[LLM Chat] Updated pipeline image cache for "
+                    f"node={unique_id} (shape={image.shape})"
+                )
+
+            # ── Fallback: use last pipeline image for edit_image ──
+            # When LLM outputs edit_image but no wired/uploaded image is
+            # provided, pull the last image from cache so Flux Klein has
+            # a source image to edit. Does NOT affect vision context —
+            # the LLM still receives text-only history per REATTACH_IMAGES.
+            if image is None and trigger_prompt_val:
+                try:
+                    tp = json.loads(trigger_prompt_val)
+                    if tp.get("action") == "edit_image":
+                        cached_img = _last_pipeline_image_cache.get(unique_id)
+                        if cached_img is not None:
+                            image = cached_img
+                            logging.info(
+                                f"[LLM Chat] edit_image fallback: using cached "
+                                f"pipeline image for node={unique_id} "
+                                f"(shape={image.shape})"
+                            )
+                        else:
+                            logging.warning(
+                                f"[LLM Chat] edit_image requested but no "
+                                f"pipeline image available for node={unique_id} "
+                                f"— image_output will be None"
+                            )
+                except Exception:
+                    pass  # Non-critical — fallback is best-effort
+
+            return _ui_result(generated_text, raw_val=raw_text, clip=clip,
+                              system_prompt_val=effective_system_prompt,
+                              b64_image=b64_image,
+                              trigger_prompt_val=trigger_prompt_val)
 
         except Exception as e:
             import traceback
             traceback.print_exc()
             err_msg = f"Error during generation: {str(e)}"
-            return _ui_result(err_msg, err_msg, clip, effective_system_prompt)
+            return _ui_result(err_msg, raw_val=err_msg, clip=clip,
+                              system_prompt_val=effective_system_prompt,
+                              b64_image=b64_image)
 
 class EasyLLMText:
     """
@@ -348,6 +570,37 @@ class EasyLLMText:
         """Pass through the input text to downstream nodes."""
         return {"ui": {"text": [text]}, "result": (text,)}
 
+
+def _parse_trigger_prompt(raw_text: str) -> str:
+    """Try to extract structured JSON from model output.
+
+    Searches for a JSON block in raw_text (which may contain think tags
+    and other artifacts). Returns the JSON string if valid with a
+    recognized action, or empty string otherwise.
+
+    Recognized actions: ``generate_image``, ``edit_image``, ``just_chat``.
+    """
+    import json
+    import re
+
+    # Try to find a JSON block — models may wrap it in ```json ... ```
+    # or emit it inline after a chat_reply field
+    json_match = re.search(
+        r'(```json\s*)?(\{.*?"action"\s*:\s*"[^"]+".*?\})\s*(```)?',
+        raw_text,
+        re.DOTALL,
+    )
+    if json_match:
+        candidate = json_match.group(2)
+        try:
+            parsed = json.loads(candidate)
+            if parsed.get("action") in ("generate_image", "edit_image", "just_chat"):
+                return json.dumps(parsed)  # Return normalised JSON
+        except json.JSONDecodeError:
+            pass
+    return ""
+
+
 class EasyLLMGGUF:
     """
     High-speed LLM chat using llama.cpp C++ inference engine.
@@ -373,11 +626,11 @@ class EasyLLMGGUF:
 
     # Module-level model cache: model_path -> LlamaCppModel
     _model_cache = {}
+    _model_cache_lock = threading.Lock()
     _gguf_call_count = 0  # DIAG: track consecutive Queue Prompt runs
 
     @classmethod
     def INPUT_TYPES(cls):
-        prompt_names = get_prompt_names()
         from .utils import CHAT_TEMPLATES
         chat_template_names = ["auto"] + list(CHAT_TEMPLATES.keys())
         return {
@@ -399,16 +652,6 @@ class EasyLLMGGUF:
                     "default": "",
                     "tooltip": "Your message to the LLM. Managed via the LLM Lab popup.",
                 }),
-                "prompt_template": (prompt_names, {
-                    "default": prompt_names[0] if prompt_names else "Custom",
-                    "tooltip": "Select a system prompt template, or Custom to write your own below.",
-                }),
-                "system_prompt_text": ("STRING", {
-                    "multiline": True,
-                    "dynamicPrompts": False,
-                    "default": "",
-                    "tooltip": "Type a custom system prompt. Used when prompt_template is 'Custom'.",
-                }),
             },
             "optional": {
                 # Section 4: Tuning — Generation parameters
@@ -427,11 +670,12 @@ class EasyLLMGGUF:
                     "tooltip": "Maximum tokens to generate",
                 }),
                 "seed": ("INT", {
-                    "default": 0,
+                    "default": 42,
                     "min": 0,
                     "max": 0xFFFFFFFF,
                     "step": 1,
-                    "tooltip": "Random seed. 0 = auto-randomize.",
+                    "control_after_generate": True,
+                    "tooltip": "The random seed used for generation. 🎲 toggle controls auto-randomize.",
                 }),
 
                 # — Socket inputs (kept here for clean node socket layout) —
@@ -447,7 +691,13 @@ class EasyLLMGGUF:
                     "multiline": True,
                     "dynamicPrompts": False,
                     "default": "",
-                    "tooltip": "Connect from LLMSystemPromptSelector. Overrides dropdown and custom text.",
+                    "tooltip": "Connect from LLM_PromptSelect or any text node to set the system prompt. This is the only way to provide a system prompt.",
+                }),
+                "system_prompt_popup": ("STRING", {
+                    "multiline": True,
+                    "dynamicPrompts": False,
+                    "default": "",
+                    "tooltip": "Pop-up selected system prompt. Used as fallback when system_prompt forceInput socket is not connected.",
                 }),
 
                 # Section 5: Hardware (Less Used) — Advanced system settings
@@ -457,21 +707,35 @@ class EasyLLMGGUF:
                 }),
                 "n_ctx": ("INT", {
                     "default": 4096,
-                    "min": 512,
+                    "min": -1,
                     "max": 32768,
                     "step": 512,
-                    "tooltip": "Context window size (max tokens the model can remember).",
+                    "tooltip": "Context window size. Set to -1 for adaptive mode: "
+                               "n_ctx auto-adjusts to conversation length "
+                               "(saves VRAM). Falls back automatically on OOM.",
+                }),
+                "flash_attn": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Flash Attention: reduces memory bandwidth during attention "
+                               "computation. Helps with long-context speed. "
+                               "Does NOT reduce KV cache VRAM allocation.",
                 }),
                 "n_gpu_layers": ("INT", {
                     "default": -1,
                     "min": -1,
                     "max": 200,
                     "step": 1,
-                    "tooltip": "-1 = all layers on GPU (max speed, more VRAM). 0 = CPU. 24+ = balanced.",
+                    "tooltip": "-1 = all layers on GPU (max speed). "
+                               "0 = CPU only. "
+                               "If VRAM is insufficient, layers auto-reduce until load succeeds.",
                 }),
                 "use_mlock": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Lock model memory to prevent OS swapping. Stabilizes shared RAM.",
+                }),
+                "iterative_refinement": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "When ON, each edit_image uses the previous generation result as its source image. When OFF, all edits use the original uploaded image.",
                 }),
                 "vram_mode": (["keep_loaded", "unload", "aggressive_free"], {
                     "default": "unload",
@@ -520,11 +784,16 @@ class EasyLLMGGUF:
             },
         }
 
-    RETURN_TYPES = ("STRING", "STRING",)
-    RETURN_NAMES = ("text", "raw_text",)
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "IMAGE",)
+    RETURN_NAMES = ("text", "raw_text", "trigger_prompt", "image_output",)
     OUTPUT_TOOLTIPS = (
         "The generated response text (cleaned, with think tags and artifacts removed)",
         "The raw generated text (uncleaned, as decoded from the model)",
+        "Structured JSON command when the model outputs an action "
+        "(generate_image, edit_image, just_chat). Empty string otherwise. "
+        "Requires ENABLE_TRIGGER_PROMPT=True in config.",
+        "Passthrough of the connected input IMAGE tensor. "
+        "Null if no image is wired. Wire to KSampler/Flux Klein for img2img editing.",
     )
     FUNCTION = "generate"
     CATEGORY = "EasyLLM"
@@ -534,7 +803,7 @@ class EasyLLMGGUF:
         "10-15x faster than PyTorch path. 30-50+ tok/s on GPU."
     )
 
-    def _get_cached_model(self, model_path, mmproj_path, n_gpu_layers, use_mlock, n_ctx):
+    def _get_cached_model(self, model_path, mmproj_path, n_gpu_layers, use_mlock, n_ctx, flash_attn=True):
         """Get or create a cached LlamaCppModel instance.
 
         Cached by composite key (model_path, mmproj_path), allowing separate
@@ -544,38 +813,14 @@ class EasyLLMGGUF:
 
         cache_key = (model_path, mmproj_path or "")
 
-        # — Check preload cache first —
-        # Move pre-loaded model (via Apply button) into regular cache.
-        from .streaming import _make_preload_key, _preload_results, _preload_lock
-        preload_key = _make_preload_key(
-            model_path, mmproj_path or "", n_gpu_layers, use_mlock, n_ctx
-        )
-        with _preload_lock:
-            preloaded = _preload_results.pop(preload_key, None)
-        if preloaded is not None:
-            logging.info(
-                f"[LLM Chat GGUF] Using pre-loaded model for {model_path} "
-                f"(mmproj={mmproj_path or 'none'})"
-            )
-            # Purge stale cache entries with same model_path but different mmproj
-            for key in list(self._model_cache.keys()):
-                if isinstance(key, tuple) and key[0] == model_path and key != cache_key:
-                    self._model_cache[key].unload()
-                    del self._model_cache[key]
-            for key in list(self._model_cache.keys()):
-                other = self._model_cache[key]
-                other.unload()
-                del self._model_cache[key]
-            self._model_cache[cache_key] = preloaded
-            return preloaded
-
         # Check cached model with matching params
         cached = self._model_cache.get(cache_key)
         if cached is not None:
             # Reload if params changed
             if (cached.n_gpu_layers != n_gpu_layers or
                     cached.use_mlock != use_mlock or
-                    cached.n_ctx != n_ctx):
+                    cached.n_ctx != n_ctx or
+                    cached.flash_attn != flash_attn):
                 logging.info(
                     f"[LLM Chat GGUF] Model params changed — reloading "
                     f"{model_path} (mmproj={mmproj_path or 'none'})"
@@ -606,6 +851,23 @@ class EasyLLMGGUF:
                 f"before loading new model {model_path}"
             )
 
+        # ── Full CUDA device sync after unloading old models ──
+        # torch.cuda.synchronize() issues a device-wide blocking
+        # synchronisation via the CUDA runtime API.  This waits for ALL
+        # pending GPU operations, including C-level operations from
+        # llama.cpp's close() which allocates/frees CUDA memory directly
+        # through the driver API (not through PyTorch).  Without this,
+        # the old model's C-level memory may not be fully released by the
+        # CUDA driver before the new model starts allocating, causing
+        # peak VRAM to briefly equal (old + new) instead of just (new).
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            # Also empty PyTorch's caching allocator pools so that any
+            # PyTorch-side remnants from the old model are returned to
+            # the driver.
+            torch.cuda.empty_cache()
+
         # Load new model
         model = LlamaCppModel(
             model_path=model_path,
@@ -613,6 +875,7 @@ class EasyLLMGGUF:
             n_gpu_layers=n_gpu_layers,
             use_mlock=use_mlock,
             n_ctx=n_ctx,
+            flash_attn=flash_attn,
         )
         model.load()
         self._model_cache[cache_key] = model
@@ -787,8 +1050,19 @@ class EasyLLMGGUF:
         return result
 
     def _ui_result(self, text_val, raw_val, model_info=None, b64_image=None,
-                   input_text="", system_prompt_val=""):
-        """Wrap text outputs in ui dict + result tuple for ComfyUI OUTPUT_NODE."""
+                   input_text="", system_prompt_val="",
+                   trigger_prompt_val="", session_uuid=None,
+                   image=None):
+        """Wrap text outputs in ui dict + result tuple for ComfyUI OUTPUT_NODE.
+
+        Uses ``images`` array format (list of {type, data} objects) instead
+        of the old singular ``image`` field. For backward compatibility, the
+        old ``image`` key is also emitted during the transition period.
+
+        Phase 3: Images are saved to the on-disk database as separate PNG files
+        so the frontend can serve them via ``/easyllm/db/image/{filename}``
+        instead of embedding base64 data URIs.
+        """
         ui_payload = {
             "text": [text_val],
             "raw_text": [raw_val],
@@ -799,28 +1073,63 @@ class EasyLLMGGUF:
             ui_payload["system_prompt"] = [system_prompt_val]
         if model_info:
             ui_payload["model_info"] = [model_info]
+
+        # Build images array from individual params, saving to DB if available.
+        # IMPORTANT: Strip the 'data' field from UI payload entries to prevent
+        # ComfyUI core from constructing oversized /api/view?type=input&data=...
+        # URLs that exceed aiohttp's 8190-byte request line limit.
+        images = []
         if b64_image:
-            ui_payload["image"] = [b64_image]
+            img_entry = {"type": "input", "data": b64_image}
+            # ── Phase 3: Save image to DB and attach filename ──
+            try:
+                from .history_db import (save_image_from_base64, is_available,
+                                         save_image_force)
+                from .utils import base64_to_bytes
+                if is_available():
+                    db_fn = save_image_from_base64(b64_image, "input")
+                else:
+                    # Force-save even when DB is disabled
+                    db_fn = save_image_force(base64_to_bytes(b64_image), "input")
+                if db_fn:
+                    img_entry["filename"] = db_fn
+            except Exception:
+                pass  # Non-critical — image without filename won't show in canvas
+            # Strip data from UI payload entry
+            ui_entry = {"type": img_entry["type"]}
+            if img_entry.get("filename"):
+                ui_entry["filename"] = img_entry["filename"]
+            images.append(ui_entry)
+        if images:
+            ui_payload["images"] = images
+
+        if session_uuid:
+            ui_payload["session_uuid"] = [session_uuid]
+
+        if trigger_prompt_val:
+            ui_payload["trigger_prompt"] = [trigger_prompt_val]
+
         return {
             "ui": ui_payload,
-            "result": (text_val, raw_val),
+            "result": (text_val, raw_val, trigger_prompt_val, image),
         }
 
     def generate(self, model_path="", text="", max_length=768,
                  temperature=0.7, seed=0, system_prompt="",
-                 prompt_template="Custom", system_prompt_text="",
                  mode="chat", text_input="", chat_template="qwen",
-                 n_gpu_layers=-1, use_mlock=True, n_ctx=4096,
+                 n_gpu_layers=-1, use_mlock=True, n_ctx=4096, flash_attn=True,
                  vram_mode="keep_loaded", top_k=50, top_p=0.9,
-                 repetition_penalty=1.0, unique_id=None,
-                 image=None, mmproj_path="", image_filename=""):
+                 repetition_penalty=1.0, iterative_refinement=False,
+                 unique_id=None, image=None,
+                 mmproj_path="", image_filename="",
+                 system_prompt_popup=""):
         """Generate text using the C++ llama.cpp inference engine.
 
         Loads GGUF model (cached if previously loaded), formats prompt
         via selected chat template, runs CUDA inference.
 
         Supports:
-        - 4-source system prompt resolution
+        - System prompt from forceInput socket
         - Chat mode (popup + history) and enhancer mode (direct output)
         - Chain text input via text_input forceInput socket
         - Multi-turn chat with history retrieval
@@ -829,32 +1138,166 @@ class EasyLLMGGUF:
         - Vision/multimodal: image input + mmproj_path for vision models
 
         Returns:
-            tuple: (cleaned_text, raw_text) or UI dict for enhancer mode
+            tuple: (cleaned_text, raw_text, trigger_prompt) or UI dict for enhancer mode
         """
+        # —— DIAGNOSTIC: Log entry into generate() ——
+        _diag_image_info = "None"
+        if image is not None:
+            _diag_image_info = f"tensor({image.shape})" if hasattr(image, 'shape') else "present(no shape)"
+        logging.info(
+            f"[DIAG] generate() ENTER: node={unique_id}, "
+            f"text_len={len(text) if text else 0}, "
+            f"image={_diag_image_info}, "
+            f"image_filename={image_filename!r}, "
+            f"mode={mode}"
+        )
+
         # — RESOLVE EFFECTIVE TEXT —
         effective_text = resolve_text(text_input, text)
+
+        # — RESPONSE FORMAT (JSON mode for trigger_prompt) —
+        from .config import ENABLE_TRIGGER_PROMPT
+        _response_format = (
+            {"type": "json_object"}
+            if ENABLE_TRIGGER_PROMPT
+            else None
+        )
+
+        # ── No-wire upload: pre-resolve image_filename as IMAGE tensor ──
+        # Must happen before cache replay check so the cached path returns
+        # a valid image_output for downstream img2img nodes during auto-queue.
+        # When the user uploaded an image via popup (no wired IMAGE tensor),
+        # load it as a ComfyUI IMAGE tensor so image_output flows downstream.
+        # Also cache in _uploaded_image_tensor_cache for retrieval during
+        # cache replay, when image_filename may have been cleared by the
+        # frontend between queues.
+        if image is None and image_filename and image_filename.strip():
+            logging.info(
+                f"[DIAG] image_output fix: image is None, "
+                f"image_filename={image_filename!r} — attempting file→tensor load"
+            )
+            try:
+                from .utils import get_comfyui_input_dir
+                import os as _os
+                import torch as _torch
+                from PIL import Image as _PILImage
+                import numpy as _np
+                _input_dir = get_comfyui_input_dir()
+                _filepath = _os.path.join(_input_dir, image_filename.strip())
+                if _os.path.exists(_filepath):
+                    _pil_img = _PILImage.open(_filepath).convert("RGB")
+                    _img_np = _np.array(_pil_img).astype(_np.float32) / 255.0
+                    image = _torch.from_numpy(_img_np).unsqueeze(0)  # (1, H, W, 3)
+                    # Cache for later retrieval in cache replay path
+                    _uploaded_image_tensor_cache[unique_id] = image
+                    logging.info(
+                        f"[DIAG] image_output fix: SUCCESS — "
+                        f"loaded {image.shape} tensor from {image_filename!r} "
+                        f"(cached for replay)"
+                    )
+                else:
+                    logging.warning(
+                        f"[DIAG] image_output fix: file NOT FOUND — "
+                        f"{_filepath}"
+                    )
+            except Exception as _e:
+                logging.warning(
+                    f"[LLM Chat GGUF] Failed to load uploaded image as "
+                    f"tensor for image_output: {_e}"
+                )
+
+        # ── Fallback: retrieve cached tensor when image_filename was cleared ──
+        # During auto-queue cache replay, image_filename may be '' because
+        # graphToPrompt() doesn't always serialize hidden/converted widgets.
+        # Retrieve the tensor cached from the first execution.
+        # Only use cache when text is empty (cache replay), NOT on fresh
+        # user messages — otherwise stale tensors leak across turns.
+        if (
+            image is None
+            and not effective_text.strip()  # cache replay mode
+            and unique_id in _uploaded_image_tensor_cache
+        ):
+            image = _uploaded_image_tensor_cache[unique_id]
+            logging.info(
+                f"[DIAG] image_output replay: retrieved cached tensor "
+                f"{image.shape} for node={unique_id}"
+            )
+
+        # ── Clear stale cache on new user message without image upload ──
+        # When a new message arrives with no image_filename (no popup upload),
+        # discard any cached tensor from a previous turn so it doesn't leak
+        # into the next auto-queue replay.
+        if (
+            not (image_filename and image_filename.strip())
+            and effective_text.strip()  # fresh user message (not replay)
+            and unique_id in _uploaded_image_tensor_cache
+        ):
+            del _uploaded_image_tensor_cache[unique_id]
+            logging.info(
+                f"[DIAG] image_output cache: cleared stale tensor for "
+                f"node={unique_id} (new message without image)"
+            )
 
         # — MODE-SPECIFIC BEHAVIOR —
         if mode == "enhancer":
             if not effective_text or not effective_text.strip():
-                return self._ui_result("", "", input_text=effective_text)
+                return self._ui_result("", "", input_text=effective_text,
+                                       image=image)
         else:
             # Chat mode: return cached output when text is empty (auto-mode)
             if not effective_text or not effective_text.strip():
+                replay_uuid = str(uuid.uuid4())
+                # ── Register session_uuid → node_id mapping ──
+                _session_to_node[replay_uuid] = unique_id
+                _iterative_refinement_flags[unique_id] = iterative_refinement
                 cached = _cache_gguf.get(unique_id, None)
                 if cached:
                     cleaned, raw = cached
-                    return self._ui_result(cleaned, raw, input_text=effective_text)
-                return self._ui_result("", "", input_text=effective_text)
+                    # ── Re-extract trigger_prompt from cached raw_text ──
+                    trigger_prompt_val = ""
+                    if ENABLE_TRIGGER_PROMPT:
+                        trigger_prompt_val = _parse_trigger_prompt(raw)
+                        if trigger_prompt_val:
+                            try:
+                                tp = json.loads(trigger_prompt_val)
+                                tp["session_uuid"] = replay_uuid
+                                trigger_prompt_val = json.dumps(tp)
+                            except Exception:
+                                pass
+                    # ── Fallback: use last pipeline image for edit_image (cache replay) ──
+                    if image is None and trigger_prompt_val:
+                        try:
+                            tp = json.loads(trigger_prompt_val)
+                            if tp.get("action") == "edit_image":
+                                cached_img = _last_pipeline_image_cache.get(unique_id)
+                                if cached_img is not None:
+                                    image = cached_img
+                                    logging.info(
+                                        f"[LLM Chat GGUF] edit_image fallback (cache replay): "
+                                        f"using cached pipeline image for node={unique_id} "
+                                        f"(shape={image.shape})"
+                                    )
+                        except Exception:
+                            pass
+                    return self._ui_result(cleaned, raw, input_text=effective_text,
+                                           trigger_prompt_val=trigger_prompt_val,
+                                           image=image, session_uuid=replay_uuid)
+                return self._ui_result("", "", input_text=effective_text,
+                                       image=image, session_uuid=replay_uuid)
 
         # — VALIDATE MODEL PATH —
         if not model_path or not model_path.strip():
             return self._ui_result(
                 NO_MODEL_PATH_ERROR, NO_MODEL_PATH_ERROR,
                 input_text=effective_text,
+                image=image,
             )
 
-        seed = auto_seed(seed)
+        # Generate per-execution session UUID for image capture reconciliation
+        session_uuid = str(uuid.uuid4())
+        # ── Register session_uuid → node_id mapping ──
+        _session_to_node[session_uuid] = unique_id
+        _iterative_refinement_flags[unique_id] = iterative_refinement
 
         # — DIAG: Track consecutive Queue Prompt runs —
         type(self)._gguf_call_count += 1
@@ -872,6 +1315,7 @@ class EasyLLMGGUF:
                     return self._ui_result(
                         LLAMA_NOT_INSTALLED_ERROR, LLAMA_NOT_INSTALLED_ERROR,
                         input_text=effective_text,
+                        image=image,
                     )
             except ImportError:
                 return self._ui_result(
@@ -879,34 +1323,111 @@ class EasyLLMGGUF:
                     "Ensure the file exists in the EasyLLM custom_node directory.",
                     "ERROR: llama_cpp_backend.py not found.",
                     input_text=effective_text,
+                    image=image,
                 )
 
-            # — GET OR CREATE CACHED MODEL —
-            # Text-only path uses empty mmproj_path; re-acquired with mmproj if image present.
-            model = self._get_cached_model(
-                model_path, "", n_gpu_layers, use_mlock, n_ctx
-            )
+            # — NORMALIZE SEED FOR LLAMA.CPP COMPATIBILITY —
+            # llama-cpp-python treats seed=0 as "auto-randomize" (different output
+            # each call), but the widget default is seed=0 with control_after_generate
+            # enabled.  When the 🎲 toggle is OFF, seed=0 reaches Python meaning "use
+            # this fixed seed" — but llama.cpp would still auto-randomize, making the
+            # toggle non-functional.  Map 0 → 1 so the default produces deterministic
+            # output when 🎲 is OFF, matching the CLIP/GPU path behavior.  When 🎲 is
+            # ON, ComfyUI replaces the widget value with a random number before
+            # queuing, so this normalization only applies when 🎲 is OFF.
+            gguf_seed = seed if seed != 0 else 1
+            if seed == 0:
+                logging.info(
+                    f"[LLM Chat GGUF] Normalized seed=0 → seed=1 for llama.cpp "
+                    f"compatibility (seed=0 means auto-randomize in llama.cpp)"
+                )
 
-            # — RESOLVE SYSTEM PROMPT (4-source resolution) —
-            effective_system_prompt = resolve_system_prompt(
-                system_prompt, prompt_template, system_prompt_text
-            )
+            # — RESOLVE SYSTEM PROMPT (forceInput socket first, popup fallback) —
+            effective_system_prompt = system_prompt if system_prompt.strip() else ""
+            if not effective_system_prompt:
+                effective_system_prompt = (system_prompt_popup or "").strip()
 
             # — RETRIEVE CHAT HISTORY (needed for text and multimodal paths) —
+            # Only fetch in chat mode — enhancer mode has no history.
             parsed_history = None
-            try:
-                from .streaming import get_chat_history
-                parsed_history = get_chat_history(unique_id)
-            except Exception as e:
-                logging.warning(
-                    f"[LLM Chat GGUF] Failed to retrieve history for node {unique_id}: {e}"
-                )
+            if mode == "chat":
+                try:
+                    from .streaming import get_chat_history
+                    parsed_history = get_chat_history(unique_id)
+                except Exception as e:
+                    logging.warning(
+                        f"[LLM Chat GGUF] Failed to retrieve history for node {unique_id}: {e}"
+                    )
 
             # — IMAGE INPUT HANDLING (vision-language / multimodal) —
             b64_image = None
             detected_template = None
             has_image = image is not None
-            uploaded_file = image_filename.strip() if not has_image else None
+            uploaded_file = image_filename.strip() if not has_image and mode == "chat" else None
+
+            # ── ADAPTIVE n_ctx: estimate from available text ──
+            effective_n_ctx = n_ctx
+            if n_ctx == -1:
+                text_for_estimate = effective_text or ""
+                if effective_system_prompt:
+                    text_for_estimate = effective_system_prompt + "\n" + text_for_estimate
+                if parsed_history:
+                    for entry in parsed_history:
+                        text_for_estimate += "\n" + (entry.get("message", "") or "")
+                image_count = (1 if has_image else 0) + (1 if uploaded_file else 0)
+                estimated_tokens = (len(text_for_estimate) // 3) + (image_count * 576)
+                effective_n_ctx = min(
+                    estimated_tokens + max_length + 256,
+                    32768,
+                )
+                effective_n_ctx = max(effective_n_ctx, 512)
+                logging.info(
+                    f"[LLM Chat GGUF] Adaptive n_ctx: estimated ~{estimated_tokens} "
+                    f"prompt tokens → effective_n_ctx={effective_n_ctx} "
+                    f"(max_length={max_length})"
+                )
+
+            # — GET OR CREATE CACHED MODEL —
+            # Detect if mmproj will be needed upstream to avoid a wasteful
+            # text-only → vision double load.  When an image or uploaded file
+            # is present, or images need re-attaching from history, load the
+            # model directly with the mmproj key instead of loading text-only
+            # first, then unloading and reloading with mmproj.
+            _needs_mmproj = has_image or bool(uploaded_file)
+
+            if _needs_mmproj:
+                # Auto-detect mmproj upfront; the vision branch below will
+                # load the model once with the correct mmproj key, avoiding
+                # the wasteful text-only → vision double load.
+                if not mmproj_path or not mmproj_path.strip():
+                    mmproj_path = self._auto_detect_mmproj(model_path)
+                if mmproj_path and mmproj_path.strip():
+                    model = self._get_cached_model(
+                        model_path, mmproj_path, n_gpu_layers,
+                        use_mlock, effective_n_ctx, flash_attn
+                    )
+                    logging.debug(
+                        f"[LLM Chat GGUF] Image detected: loaded model with "
+                        f"mmproj={mmproj_path or 'none'}"
+                    )
+                else:
+                    # No mmproj found — load text-only model as fallback.
+                    # The vision/reattach branches will validate mmproj and
+                    # error out if it's truly required (has_image/uploaded_file),
+                    # or use the text-only model for reattach from history.
+                    model = self._get_cached_model(
+                        model_path, "", n_gpu_layers,
+                        use_mlock, effective_n_ctx, flash_attn
+                    )
+                    logging.debug(
+                        f"[LLM Chat GGUF] Image detected but no mmproj found — "
+                        f"loaded text-only model as fallback"
+                    )
+            else:
+                # Text-only path: load model without mmproj
+                model = self._get_cached_model(
+                    model_path, "", n_gpu_layers, use_mlock, effective_n_ctx, flash_attn
+                )
 
             if has_image:
                 # — AUTO-DETECT mmproj FILE (lazy fallback) —
@@ -930,11 +1451,12 @@ class EasyLLMGGUF:
                         "auto-detected.",
                         "ERROR: mmproj_path required for image input.",
                         input_text=effective_text,
+                        image=image,
                     )
 
                 # — RE-ACQUIRE MODEL WITH mmproj PARAMETER —
                 model = self._get_cached_model(
-                    model_path, mmproj_path, n_gpu_layers, use_mlock, n_ctx
+                    model_path, mmproj_path, n_gpu_layers, use_mlock, effective_n_ctx, flash_attn
                 )
 
                 # — CHAT TEMPLATE DETECTION FOR VISION PATH —
@@ -997,6 +1519,7 @@ class EasyLLMGGUF:
                         "tensor (from a Load Image node).",
                         f"ERROR: Image conversion failed: {e}",
                         input_text=effective_text,
+                        image=image,
                     )
 
                 # — BUILD OPENAI-COMPATIBLE MESSAGES ARRAY —
@@ -1009,18 +1532,20 @@ class EasyLLMGGUF:
                         "content": effective_system_prompt
                     })
 
-                # Text-only history; image turns are not persisted.
                 if parsed_history:
                     for entry in parsed_history:
                         role = entry.get("role", "user")
                         msg = entry.get("message", "")
                         messages.append({"role": role, "content": msg})
 
-                user_content = [
-                    {"type": "image_url",
-                     "image_url": {"url": b64_image}},
-                    {"type": "text", "text": effective_text}
-                ]
+                # Build user content: input image + text
+                user_content = []
+                if b64_image:
+                    user_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": b64_image},
+                    })
+                user_content.append({"type": "text", "text": effective_text})
                 messages.append({"role": "user", "content": user_content})
 
                 # — DIAGNOSTIC: Log messages array structure —
@@ -1044,8 +1569,10 @@ class EasyLLMGGUF:
                 )
 
                 # — CHECK IF POPUP IS OPEN (streaming path) —
-                is_streaming = mode == "chat"
-                if is_streaming:
+                # Chat mode: use streaming path when popup is open (token events + progress).
+                # Enhancer mode: always use streaming path for progress events (no popup).
+                is_streaming = mode in ("chat", "enhancer")
+                if is_streaming and mode == "chat":
                     try:
                         from .streaming import is_popup_mode
                         from .generation_state import get_state
@@ -1075,7 +1602,7 @@ class EasyLLMGGUF:
                         temperature=temperature,
                         top_k=top_k,
                         top_p=top_p,
-                        seed=seed,
+                        seed=gguf_seed,
                         repetition_penalty=repetition_penalty,
                         stop=_vision_stop_tokens,
                         unique_id=unique_id,
@@ -1088,7 +1615,7 @@ class EasyLLMGGUF:
                         temperature=temperature,
                         top_k=top_k,
                         top_p=top_p,
-                        seed=seed,
+                        seed=gguf_seed,
                         repetition_penalty=repetition_penalty,
                         stop=_vision_stop_tokens,
                     )
@@ -1117,11 +1644,12 @@ class EasyLLMGGUF:
                         "auto-detected.",
                         "ERROR: mmproj_path required for image input.",
                         input_text=effective_text,
+                        image=image,
                     )
 
                 # — RE-ACQUIRE MODEL WITH mmproj PARAMETER —
                 model = self._get_cached_model(
-                    model_path, mmproj_path, n_gpu_layers, use_mlock, n_ctx
+                    model_path, mmproj_path, n_gpu_layers, use_mlock, effective_n_ctx, flash_attn
                 )
 
                 # — CHAT TEMPLATE DETECTION FOR NO-WIRE VISION PATH —
@@ -1182,12 +1710,14 @@ class EasyLLMGGUF:
                         "input/ directory. Please re-attach the image.",
                         f"ERROR: Uploaded image not found: {e}",
                         input_text=effective_text,
+                        image=image,
                     )
                 except Exception as e:
                     return self._ui_result(
                         f"ERROR: Failed to load uploaded image: {e}",
                         f"ERROR: Image load failed: {e}",
                         input_text=effective_text,
+                        image=image,
                     )
 
                 # — BUILD OPENAI-COMPATIBLE MESSAGES ARRAY —
@@ -1205,11 +1735,14 @@ class EasyLLMGGUF:
                         msg = entry.get("message", "")
                         messages.append({"role": role, "content": msg})
 
-                user_content = [
-                    {"type": "image_url",
-                     "image_url": {"url": b64_image}},
-                    {"type": "text", "text": effective_text}
-                ]
+                # Build user content: uploaded image first, then generated, then text
+                user_content = []
+                if b64_image:
+                    user_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": b64_image},
+                    })
+                user_content.append({"type": "text", "text": effective_text})
                 messages.append({"role": "user", "content": user_content})
 
                 # — DIAGNOSTIC: Log messages array structure —
@@ -1234,8 +1767,10 @@ class EasyLLMGGUF:
                 )
 
                 # — CHECK IF POPUP IS OPEN (streaming path) —
-                is_streaming = mode == "chat"
-                if is_streaming:
+                # Chat mode: use streaming path when popup is open (token events + progress).
+                # Enhancer mode: always use streaming path for progress events (no popup).
+                is_streaming = mode in ("chat", "enhancer")
+                if is_streaming and mode == "chat":
                     try:
                         from .streaming import is_popup_mode
                         from .generation_state import get_state
@@ -1258,7 +1793,7 @@ class EasyLLMGGUF:
                         temperature=temperature,
                         top_k=top_k,
                         top_p=top_p,
-                        seed=seed,
+                        seed=gguf_seed,
                         repetition_penalty=repetition_penalty,
                         stop=_vision_stop_tokens,
                         unique_id=unique_id,
@@ -1271,15 +1806,16 @@ class EasyLLMGGUF:
                         temperature=temperature,
                         top_k=top_k,
                         top_p=top_p,
-                        seed=seed,
+                        seed=gguf_seed,
                         repetition_penalty=repetition_penalty,
                         stop=_vision_stop_tokens,
                     )
 
                 multimodal_mode = True
 
+
             else:
-                # — TEXT-ONLY PATH —
+                # ── TEXT-ONLY PATH ──
                 multimodal_mode = False
 
                 # — AUTO-DETECT CHAT TEMPLATE (3-TIER PIPELINE) —
@@ -1383,8 +1919,10 @@ class EasyLLMGGUF:
                 )
 
                 # — CHECK IF POPUP IS OPEN (streaming path) —
-                is_streaming = mode == "chat"
-                if is_streaming:
+                # Chat mode: use streaming path when popup is open (token events + progress).
+                # Enhancer mode: always use streaming path for progress events (no popup).
+                is_streaming = mode in ("chat", "enhancer")
+                if is_streaming and mode == "chat":
                     try:
                         from .streaming import is_popup_mode
                         from .generation_state import get_state
@@ -1414,7 +1952,7 @@ class EasyLLMGGUF:
                         temperature=temperature,
                         top_k=top_k,
                         top_p=top_p,
-                        seed=seed,
+                        seed=gguf_seed,
                         stop=stop_tokens,
                         repetition_penalty=repetition_penalty,
                         unique_id=unique_id,
@@ -1427,13 +1965,40 @@ class EasyLLMGGUF:
                         temperature=temperature,
                         top_k=top_k,
                         top_p=top_p,
-                        seed=seed,
+                        seed=gguf_seed,
                         stop=stop_tokens,
                         repetition_penalty=repetition_penalty,
                     )
 
             # — CLEAN GENERATED TEXT —
             cleaned_text = clean_generated_text(raw_text)
+
+            # — EXTRACT TRIGGER PROMPT (if enabled) —
+            trigger_prompt_val = ""
+            if ENABLE_TRIGGER_PROMPT:
+                trigger_prompt_val = _parse_trigger_prompt(raw_text)
+                # ── Fallback: synthetic JSON for enhancer plain-text output ──
+                # When LLM outputs plain text (no JSON), _parse_trigger_prompt
+                # returns empty. This breaks the trigger_prompt wire and
+                # prevents session_uuid from reaching the Image Capture node,
+                # causing orphaned images in enhancer history popup.
+                # We wrap the plain text in synthetic generate_image JSON so
+                # the Trigger Router / Image Capture pipeline works normally.
+                if not trigger_prompt_val and mode == "enhancer" and raw_text.strip():
+                    trigger_prompt_val = json.dumps({
+                        "action": "generate_image",
+                        "prompt": raw_text,
+                        "negative": "",
+                        "session_uuid": session_uuid,
+                    })
+                if trigger_prompt_val:
+                    # Embed session_uuid for downstream Image Capture node
+                    try:
+                        tp = json.loads(trigger_prompt_val)
+                        tp["session_uuid"] = session_uuid
+                        trigger_prompt_val = json.dumps(tp)
+                    except Exception:
+                        pass  # Non-critical — image capture won't work without session_uuid
 
             # — COLLECT MODEL INFO FROM GGUF METADATA —
             model_info = {}
@@ -1485,34 +2050,90 @@ class EasyLLMGGUF:
             if mode == "chat":
                 _cache_gguf[unique_id] = (cleaned_text, raw_text)
 
-            ui_payload = {
-                "text": [cleaned_text],
-                "raw_text": [raw_text],
-            }
-            if model_info.get("architecture") or model_info.get("name"):
-                ui_payload["model_info"] = [model_info]
-            if b64_image:
-                ui_payload["image"] = [b64_image]
+            # ── Update last pipeline image cache ──
+            # Populated whenever a non-None image passes through.
+            # Used as fallback on next turn when LLM outputs edit_image
+            # but no new wired/uploaded image is provided.
+            if image is not None:
+                _last_pipeline_image_cache[unique_id] = image
+                logging.debug(
+                    f"[LLM Chat GGUF] Updated pipeline image cache for "
+                    f"node={unique_id} (shape={image.shape})"
+                )
+
+            # ── Fallback: use last pipeline image for edit_image ──
+            # When LLM outputs edit_image but no wired/uploaded image is
+            # provided, pull the last image from cache so Flux Klein has
+            # a source image to edit. Does NOT affect vision context —
+            # the LLM still receives text-only history per REATTACH_IMAGES.
+            if image is None and trigger_prompt_val:
+                try:
+                    tp = json.loads(trigger_prompt_val)
+                    if tp.get("action") == "edit_image":
+                        cached_img = _last_pipeline_image_cache.get(unique_id)
+                        if cached_img is not None:
+                            image = cached_img
+                            logging.info(
+                                f"[LLM Chat GGUF] edit_image fallback: using "
+                                f"cached pipeline image for node={unique_id} "
+                                f"(shape={image.shape})"
+                            )
+                        else:
+                            logging.warning(
+                                f"[LLM Chat GGUF] edit_image requested but no "
+                                f"pipeline image available for node={unique_id}"
+                            )
+                except Exception:
+                    pass  # Non-critical — fallback is best-effort
+
+            # ── No-wire upload: load file as IMAGE tensor for image_output ──
+            # When image was uploaded via popup (no IMAGE tensor wired), the
+            # uploaded_file path loads it for vision LLM processing, but the
+            # image_output socket returns None. Load the file as a proper
+            # ComfyUI IMAGE tensor so downstream img2img nodes (KSampler with
+            # denoise < 1.0, VAE Encode, etc.) receive the input image.
+            if uploaded_file and image is None:
+                try:
+                    from .utils import get_comfyui_input_dir
+                    import os as _os
+                    import torch as _torch
+                    from PIL import Image as _PILImage
+                    import numpy as _np
+                    _input_dir = get_comfyui_input_dir()
+                    _filepath = _os.path.join(_input_dir, uploaded_file)
+                    if _os.path.exists(_filepath):
+                        _pil_img = _PILImage.open(_filepath).convert("RGB")
+                        _img_np = _np.array(_pil_img).astype(_np.float32) / 255.0
+                        image = _torch.from_numpy(_img_np).unsqueeze(0)  # (1, H, W, 3)
+                except Exception as _e:
+                    logging.warning(
+                        f"[LLM Chat GGUF] Failed to load uploaded image as "
+                        f"tensor for image_output: {_e}"
+                    )
+
+            # — BUILD UI PAYLOAD WITH images ARRAY (backward-compat) —
+            result = self._ui_result(
+                cleaned_text, raw_text,
+                model_info=model_info if model_info.get("architecture") or model_info.get("name") else None,
+                b64_image=b64_image,
+                input_text=effective_text,
+                system_prompt_val=effective_system_prompt,
+                trigger_prompt_val=trigger_prompt_val,
+                session_uuid=session_uuid,
+                image=image,
+            )
 
             # — ENHANCER MODE RETURN —
             if mode == "enhancer":
-                ui_payload["input_text"] = [effective_text]
-                ui_payload["system_prompt"] = [effective_system_prompt]
-                ui_payload["enhancer"] = [json.dumps({
+                result["ui"]["enhancer"] = [json.dumps({
                     "input": effective_text,
                     "output": cleaned_text,
                     "system_prompt": effective_system_prompt,
                 })]
-                return {
-                    "ui": ui_payload,
-                    "result": (cleaned_text, raw_text),
-                }
+                return result
 
             # — CHAT MODE RETURN —
-            return {
-                "ui": ui_payload,
-                "result": (cleaned_text, raw_text),
-            }
+            return result
 
         except Exception as e:
             import traceback
@@ -1666,22 +2287,30 @@ class EasyLLMGGUF:
             return self._ui_result(
                 err_msg, err_msg,
                 input_text=effective_text,
+                trigger_prompt_val="",
+                image=image,
             )
 
         finally:
             if vram_mode in ("unload", "aggressive_free"):
                 from .debug_profiler import profiler
                 profiler.begin("model_unload")
-                # Iterate all keys to match composite (model_path, mmproj_path) tuples
-                for key in list(self._model_cache.keys()):
-                    if isinstance(key, tuple) and key[0] == model_path:
-                        cached = self._model_cache[key]
-                        cached.unload()
-                        del self._model_cache[key]
-                        logging.info(
-                            f"[LLM Chat GGUF] Model unloaded (vram_mode={vram_mode}, "
-                            f"mmproj={key[1] or 'none'})"
-                        )
+                # ── Use lock around cache iteration ──
+                # Prevents race condition when multiple EasyLLMGGUF nodes
+                # are executed concurrently in the same workflow.
+                with self._model_cache_lock:
+                    # Iterate all keys to match composite
+                    # (model_path, mmproj_path) tuples
+                    for key in list(self._model_cache.keys()):
+                        if isinstance(key, tuple) and key[0] == model_path:
+                            cached = self._model_cache[key]
+                            cached.unload()
+                            del self._model_cache[key]
+                            logging.info(
+                                f"[LLM Chat GGUF] Model unloaded "
+                                f"(vram_mode={vram_mode}, "
+                                f"mmproj={key[1] or 'none'})"
+                            )
                 profiler.end("model_unload")
 
             # Aggressive VRAM cleanup after unload

@@ -1,11 +1,20 @@
 /**
  * EasyLLM — Prompt management dialog (add/edit/delete/import/export system prompts)
  *
- * Self-contained modal UI for managing system prompt templates.
+ * v3: Flat prompts model, "System Prompts" locked at bottom, no default/hardcoded prompts.
+ * All prompts are editable, movable, and deletable.
  * Uses CSS classes (.llm-manager-*) defined in llm_chat.css and constants.js.
  */
 
-import { fetchPrompts, savePromptsToBackend, refreshAllTemplateWidgets, importPromptsFromFile } from "./api.js";
+import {
+    fetchPrompts,
+    savePromptsToBackend,
+    importPromptsFromFile,
+    importTextFilesAsPrompts,
+    saveCategories as saveCategoriesApi,
+    deleteCategory as deleteCategoryApi,
+    exportAllPrompts as exportAllPromptsApi,
+} from "./api.js";
 import { createOverlayModal } from "./ui_utils.js";
 
 // ────────────────────────────────────────────────────────────────────────
@@ -26,7 +35,7 @@ export function openPromptManagerDialog() {
 
     const { overlay, panel, body, footer } = createOverlayModal(
         "llm-manager",
-        "⚙ Manage System Prompts",
+        "📚 Prompt Library",
         onClose,
         {
             hasFooter: true,
@@ -51,7 +60,7 @@ export function openPromptManagerDialog() {
 // Confirmation Dialog (Promise-based styled modal)
 // ────────────────────────────────────────────────────────────────────────
 
-function showConfirmDialog(title, message) {
+function showConfirmDialog(title, message, okText = "Delete", okClass = "llm-manager-btn-danger") {
     return new Promise((resolve) => {
         const confirmOverlay = document.createElement("div");
         confirmOverlay.className = "llm-manager-confirm-overlay";
@@ -82,8 +91,8 @@ function showConfirmDialog(title, message) {
         btnRow.appendChild(cancelBtn);
 
         const okBtn = document.createElement("button");
-        okBtn.className = "llm-manager-btn llm-manager-btn-danger";
-        okBtn.textContent = "Delete";
+        okBtn.className = `llm-manager-btn ${okClass}`;
+        okBtn.textContent = okText;
         okBtn.onclick = () => {
             document.body.removeChild(confirmOverlay);
             resolve(true);
@@ -111,18 +120,31 @@ function showFeedback(container, message, type = "success") {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// Management Dialog: Render the prompt list (with search, reorder, export)
+// State (per render cycle)
 // ────────────────────────────────────────────────────────────────────────
 
-let _selectedForExport = new Set(); // tracks which prompt indices are checked for export
+let _selectedForExport = new Set(); // tracks which prompt indices are checked
+let _currentFilter = "All Categories"; // current category filter value
+
+const LOCKED_CATEGORY = "System Prompts";
+
+// ────────────────────────────────────────────────────────────────────────
+// Render: Main prompt manager UI
+// ────────────────────────────────────────────────────────────────────────
 
 export async function renderPromptManager(body, footer) {
-    const prompts = await fetchPrompts();
+    const struct = await fetchPrompts();
     body.innerHTML = "";
     footer.innerHTML = "";
     _selectedForExport = new Set();
+    _currentFilter = "All Categories";
 
-    // ── Toolbar: search + action buttons ──
+    // ── Helper: get flat array of all prompts (no _isDefault flags) ──
+    function getFlatPrompts() {
+        return struct.prompts || [];
+    }
+
+    // ── Row 1: Toolbar (search + import + export all) ──
     const toolbar = document.createElement("div");
     toolbar.className = "llm-manager-toolbar";
 
@@ -132,282 +154,757 @@ export async function renderPromptManager(body, footer) {
     searchInput.placeholder = "🔍 Search prompts by name...";
     toolbar.appendChild(searchInput);
 
+    // Auto-focus the search input when dialog opens
+    setTimeout(() => searchInput.focus(), 100);
+
     const importBtn = document.createElement("button");
     importBtn.className = "llm-manager-btn";
-    importBtn.textContent = "📥 Import...";
+    importBtn.textContent = "📥 Import";
     importBtn.title = "Import prompts from a JSON file";
-    importBtn.onclick = () => showImportDialog(body, footer, prompts);
+    importBtn.onclick = () => showImportDialog(body, footer, struct);
     toolbar.appendChild(importBtn);
 
-    const exportBtn = document.createElement("button");
-    exportBtn.className = "llm-manager-btn";
-    exportBtn.textContent = "📤 Export Selected";
-    exportBtn.title = "Download checked prompts as JSON file";
-    exportBtn.onclick = () => exportSelectedPrompts(prompts);
-    toolbar.appendChild(exportBtn);
+    const exportAllBtn = document.createElement("button");
+    exportAllBtn.className = "llm-manager-btn";
+    exportAllBtn.textContent = "📤 Export All";
+    exportAllBtn.title = "Download all prompts with categories as JSON";
+    exportAllBtn.onclick = () => doExportAll();
+    toolbar.appendChild(exportAllBtn);
 
     body.appendChild(toolbar);
 
-    // ── Add New button (full width below toolbar) ──
+    // ── Row 2: Add New Prompt (full-width) ──
     const addBtn = document.createElement("button");
-    addBtn.className = "llm-manager-btn llm-manager-btn-primary";
+    addBtn.className = "llm-manager-btn llm-manager-btn-primary llm-manager-add-row";
     addBtn.textContent = "+ Add New Prompt";
-    addBtn.style.width = "100%";
-    addBtn.style.marginBottom = "4px";
     addBtn.onclick = () => {
-        const newPrompts = [...prompts, { name: "", prompt: "" }];
-        showPromptEditor(body, footer, newPrompts, newPrompts.length - 1, true);
+        showPromptEditor(body, footer, struct, null, true);
     };
     body.appendChild(addBtn);
 
-    // ── List container (scrollable) ──
-    const listContainer = document.createElement("div");
-    listContainer.className = "llm-manager-list";
+    // ── Row 3: Category filter + manage ──
+    const filterRow = document.createElement("div");
+    filterRow.className = "llm-manager-filter-row";
 
-    function renderList(filterText) {
-        listContainer.innerHTML = "";
-        const lowerFilter = (filterText || "").toLowerCase();
+    const filterLabel = document.createElement("span");
+    filterLabel.className = "llm-manager-filter-label";
+    filterLabel.textContent = "Category:";
+    filterRow.appendChild(filterLabel);
 
-        const filtered = prompts.filter((p, _i) =>
-            !lowerFilter || (p.name || "").toLowerCase().includes(lowerFilter)
-        );
+    const filterSelect = document.createElement("select");
+    filterSelect.className = "llm-manager-filter-select";
+    body.appendChild(filterRow);
 
-        if (filtered.length === 0) {
+    const manageCatBtn = document.createElement("button");
+    manageCatBtn.className = "llm-manager-btn llm-manager-btn-small";
+    manageCatBtn.textContent = "⚙ Manage";
+    manageCatBtn.title = "Add, rename, reorder, or delete categories";
+    manageCatBtn.onclick = () => showCategoryManager(body, footer, struct);
+
+    // Build filter dropdown options
+    function buildFilterOptions() {
+        filterSelect.innerHTML = "";
+        const cats = struct.categories || [LOCKED_CATEGORY];
+
+        const allOpt = document.createElement("option");
+        allOpt.value = "All Categories";
+        allOpt.textContent = "All Categories";
+        filterSelect.appendChild(allOpt);
+
+        for (const cat of cats) {
+            const opt = document.createElement("option");
+            opt.value = cat;
+            opt.textContent = cat;
+            filterSelect.appendChild(opt);
+        }
+        // No separate "System Prompts" option — it's already in the categories list
+    }
+    buildFilterOptions();
+    filterSelect.value = _currentFilter;
+
+    filterRow.appendChild(filterSelect);
+    filterRow.appendChild(manageCatBtn);
+
+    // ── Batch operations toolbar ──
+    const batchBar = document.createElement("div");
+    batchBar.className = "llm-manager-batch-bar";
+
+    // Left group: checkbox + "Select all"
+    const batchLeft = document.createElement("div");
+    batchLeft.className = "llm-manager-batch-left";
+
+    const selectAllCheckbox = document.createElement("input");
+    selectAllCheckbox.type = "checkbox";
+    selectAllCheckbox.className = "llm-manager-checkbox";
+    selectAllCheckbox.title = "Select all visible";
+    batchLeft.appendChild(selectAllCheckbox);
+
+    const selectAllLabel = document.createElement("span");
+    selectAllLabel.className = "llm-manager-batch-label";
+    selectAllLabel.textContent = "Select all";
+    batchLeft.appendChild(selectAllLabel);
+
+    batchBar.appendChild(batchLeft);
+
+    // Right group: "Move to:" + dropdown + Apply + Remove
+    const batchRight = document.createElement("div");
+    batchRight.className = "llm-manager-batch-right";
+
+    const moveLabel = document.createElement("span");
+    moveLabel.className = "llm-manager-batch-label";
+    moveLabel.textContent = "Move to:";
+    batchRight.appendChild(moveLabel);
+
+    const moveSelect = document.createElement("select");
+    moveSelect.className = "llm-manager-select llm-manager-select-small";
+    batchRight.appendChild(moveSelect);
+
+    const moveBtn = document.createElement("button");
+    moveBtn.className = "llm-manager-btn llm-manager-btn-small";
+    moveBtn.textContent = "Apply";
+    moveBtn.onclick = () => doBatchMove();
+    batchRight.appendChild(moveBtn);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "llm-manager-btn llm-manager-btn-danger llm-manager-btn-small";
+    removeBtn.textContent = "🗑 Remove Selected";
+    removeBtn.onclick = () => doBatchRemove();
+    batchRight.appendChild(removeBtn);
+
+    batchBar.appendChild(batchRight);
+
+    // ── Grid container ──
+    const grid = document.createElement("div");
+    grid.className = "llm-manager-grid";
+
+    // ── Render function ──
+    function renderGrid() {
+        grid.innerHTML = "";
+        const allFlat = getFlatPrompts();
+        const lowerSearch = (searchInput.value || "").toLowerCase();
+
+        // Filter by category + search
+        let visible = allFlat.filter((p) => {
+            // Category filter (no _isDefault checks — all prompts are equal)
+            if (_currentFilter !== "All Categories") {
+                const pCat = p.category || "Favorites";
+                if (pCat !== _currentFilter) return false;
+            }
+
+            // Search filter
+            if (lowerSearch && !(p.name || "").toLowerCase().includes(lowerSearch)) {
+                return false;
+            }
+
+            return true;
+        });
+
+        // Update select-all checkbox
+        const allVisibleSelected = visible.length > 0 && visible.every((p) => {
+            const flatIdx = allFlat.indexOf(p);
+            return _selectedForExport.has(flatIdx);
+        });
+        selectAllCheckbox.checked = allVisibleSelected;
+        selectAllLabel.textContent = allVisibleSelected ? "Deselect all" : "Select all";
+
+        // Build move-to options
+        function buildMoveSelect(sel) {
+            sel.innerHTML = "";
+            const cats = struct.categories || [LOCKED_CATEGORY];
+            for (const cat of cats) {
+                const opt = document.createElement("option");
+                opt.value = cat;
+                opt.textContent = cat;
+                sel.appendChild(opt);
+            }
+        }
+        buildMoveSelect(moveSelect);
+
+        if (visible.length === 0) {
             const empty = document.createElement("div");
             empty.className = "llm-manager-empty";
-            empty.textContent = filterText
+            empty.textContent = lowerSearch
                 ? "No prompts match your search."
-                : "No prompts yet. Click '+ Add New Prompt' to create one.";
-            listContainer.appendChild(empty);
+                : _currentFilter === "All Categories"
+                    ? "No prompts yet. Click '+ Add New Prompt' to create one."
+                    : `No prompts in "${_currentFilter}".`;
+            grid.appendChild(empty);
+
+            // Update footer
+            updateFooter(allFlat, visible);
             return;
         }
 
-        // Toggle all checkbox state
-        const allSelected = filtered.every((_p, i) => {
-            const origIdx = prompts.indexOf(filtered[i]);
-            return _selectedForExport.has(origIdx);
-        });
-
-        // Select all / deselect all header row
-        const selectAllRow = document.createElement("div");
-        selectAllRow.style.cssText = "display:flex;align-items:center;gap:6px;padding:4px 10px;flex-shrink:0;";
-        const selectAllCheckbox = document.createElement("input");
-        selectAllCheckbox.type = "checkbox";
-        selectAllCheckbox.className = "llm-manager-checkbox";
-        selectAllCheckbox.checked = allSelected;
-        selectAllCheckbox.title = allSelected ? "Deselect all" : "Select all";
-        selectAllCheckbox.onchange = () => {
-            const checked = selectAllCheckbox.checked;
-            for (const p of filtered) {
-                const origIdx = prompts.indexOf(p);
-                if (checked) {
-                    _selectedForExport.add(origIdx);
-                } else {
-                    _selectedForExport.delete(origIdx);
-                }
-            }
-            renderList(searchInput.value);
-        };
-        selectAllRow.appendChild(selectAllCheckbox);
-        const selectAllLabel = document.createElement("span");
-        selectAllLabel.style.cssText = "color:#888;font-size:11px;";
-        selectAllLabel.textContent = allSelected ? "Deselect all" : "Select all";
-        selectAllRow.appendChild(selectAllLabel);
-        listContainer.appendChild(selectAllRow);
-
-        // Prompt rows
-        for (const p of filtered) {
-            const origIdx = prompts.indexOf(p);
-            const index = prompts.indexOf(p);
-
-            const row = document.createElement("div");
-            row.className = "llm-manager-prompt-row";
-
-            // Checkbox for export
-            const checkbox = document.createElement("input");
-            checkbox.type = "checkbox";
-            checkbox.className = "llm-manager-checkbox";
-            checkbox.checked = _selectedForExport.has(origIdx);
-            checkbox.onchange = () => {
-                if (checkbox.checked) {
-                    _selectedForExport.add(origIdx);
-                } else {
-                    _selectedForExport.delete(origIdx);
-                }
-                renderList(searchInput.value);
-            };
-            row.appendChild(checkbox);
-
-            // Name
-            const nameSpan = document.createElement("span");
-            nameSpan.className = "llm-manager-prompt-name";
-            nameSpan.textContent = p.name || "(unnamed)";
-            row.appendChild(nameSpan);
-
-            // Preview (clickable to expand/collapse)
-            const preview = document.createElement("span");
-            preview.className = "llm-manager-prompt-preview";
-            const fullText = p.prompt || "";
-            const snippet = fullText.substring(0, 80).replace(/\n/g, " ");
-            preview.textContent = snippet + (fullText.length > 80 ? "..." : "");
-            preview._expanded = false;
-            preview._fullText = fullText;
-            preview.addEventListener("click", (e) => {
-                e.stopPropagation();
-                preview._expanded = !preview._expanded;
-                if (preview._expanded) {
-                    preview.textContent = preview._fullText;
-                    preview.classList.add("expanded");
-                } else {
-                    const s = preview._fullText.substring(0, 80).replace(/\n/g, " ");
-                    preview.textContent = s + (preview._fullText.length > 80 ? "..." : "");
-                    preview.classList.remove("expanded");
-                }
-            });
-            row.appendChild(preview);
-
-            // Character count badge
-            const badge = document.createElement("span");
-            badge.className = "llm-manager-badge";
-            badge.textContent = `${fullText.length} chars`;
-            row.appendChild(badge);
-
-            // Reorder + edit + delete buttons
-            const btnGroup = document.createElement("span");
-            btnGroup.className = "llm-manager-row-btns";
-
-            // Move up
-            const upBtn = document.createElement("button");
-            upBtn.className = "llm-manager-btn-icon";
-            upBtn.textContent = "↑";
-            upBtn.title = "Move up";
-            upBtn.disabled = index === 0;
-            upBtn.onclick = async (e) => {
-                e.stopPropagation();
-                if (index <= 0) return;
-                [prompts[index - 1], prompts[index]] = [prompts[index], prompts[index - 1]];
-                const ok = await savePromptsToBackend(prompts);
-                if (ok) {
-                    refreshAllTemplateWidgets(prompts);
-                    renderList(searchInput.value);
-                }
-            };
-            btnGroup.appendChild(upBtn);
-
-            // Move down
-            const downBtn = document.createElement("button");
-            downBtn.className = "llm-manager-btn-icon";
-            downBtn.textContent = "↓";
-            downBtn.title = "Move down";
-            downBtn.disabled = index === prompts.length - 1;
-            downBtn.onclick = async (e) => {
-                e.stopPropagation();
-                if (index >= prompts.length - 1) return;
-                [prompts[index], prompts[index + 1]] = [prompts[index + 1], prompts[index]];
-                const ok = await savePromptsToBackend(prompts);
-                if (ok) {
-                    refreshAllTemplateWidgets(prompts);
-                    renderList(searchInput.value);
-                }
-            };
-            btnGroup.appendChild(downBtn);
-
-            // Edit
-            const editBtn = document.createElement("button");
-            editBtn.className = "llm-manager-btn-ghost";
-            editBtn.textContent = "✎";
-            editBtn.title = "Edit";
-            editBtn.onclick = () => showPromptEditor(body, footer, prompts, index, false);
-            btnGroup.appendChild(editBtn);
-
-            // Delete
-            const delBtn = document.createElement("button");
-            delBtn.className = "llm-manager-btn llm-manager-btn-danger llm-manager-btn-small";
-            delBtn.textContent = "🗑";
-            delBtn.title = "Delete";
-            delBtn.onclick = async () => {
-                const name = p.name || "(unnamed)";
-                const confirmed = await showConfirmDialog("Delete Prompt", `Are you sure you want to delete "${name}"?`);
-                if (!confirmed) return;
-                prompts.splice(index, 1);
-                const ok = await savePromptsToBackend(prompts);
-                if (ok) {
-                    refreshAllTemplateWidgets(prompts);
-                    renderList(searchInput.value);
-                } else {
-                    showFeedback(body, "Failed to save", "error");
-                }
-            };
-            btnGroup.appendChild(delBtn);
-
-            row.appendChild(btnGroup);
-            listContainer.appendChild(row);
+        // Render cards (no isSystemView — all cards are equal)
+        for (const p of visible) {
+            const flatIdx = allFlat.indexOf(p);
+            const card = createCard(p, flatIdx, struct, () => renderGrid());
+            grid.appendChild(card);
         }
 
-        // Count in footer
+        // Update footer
+        updateFooter(allFlat, visible);
+    }
+
+    // ── Footer ──
+    function updateFooter(allFlat, visible) {
         footer.innerHTML = "";
         const countLabel = document.createElement("span");
         countLabel.className = "llm-manager-count";
         const selectedCount = _selectedForExport.size;
-        countLabel.textContent = `${filtered.length} shown · ${prompts.length} total` +
-            (selectedCount > 0 ? ` · ${selectedCount} selected for export` : "");
+        let text = `${visible.length} shown · ${allFlat.length} total`;
+        if (selectedCount > 0) {
+            text += ` · ${selectedCount} selected for export`;
+        }
+        countLabel.textContent = text;
         footer.appendChild(countLabel);
-    }
 
-    body.appendChild(listContainer);
-
-    // Search handler
-    searchInput.addEventListener("input", () => {
-        renderList(searchInput.value);
-    });
-
-    // Initial render
-    renderList("");
-}
-
-// ────────────────────────────────────────────────────────────────────────
-// Export: Download selected prompts as JSON file
-// ────────────────────────────────────────────────────────────────────────
-
-function exportSelectedPrompts(allPrompts) {
-    const selected = [];
-    for (const idx of _selectedForExport) {
-        if (allPrompts[idx]) {
-            selected.push(allPrompts[idx]);
+        if (selectedCount > 0) {
+            const exportSelBtn = document.createElement("button");
+            exportSelBtn.className = "llm-manager-btn llm-manager-btn-small";
+            exportSelBtn.textContent = "📤 Export Selected";
+            exportSelBtn.onclick = () => doExportSelected(allFlat);
+            footer.appendChild(exportSelBtn);
         }
     }
 
-    if (selected.length === 0) {
-        // Show feedback on the body
-        const body = document.querySelector(".llm-manager-body");
-        if (body) showFeedback(body, "No prompts selected. Check the boxes next to prompts you want to export.", "error");
-        return;
+    // ── Event handlers ──
+
+    // Select all / deselect all
+    selectAllCheckbox.onchange = () => {
+        const allFlat = getFlatPrompts();
+        const lowerSearch = (searchInput.value || "").toLowerCase();
+        const checked = selectAllCheckbox.checked;
+        for (let i = 0; i < allFlat.length; i++) {
+            const p = allFlat[i];
+            // Match same filter logic (no _isDefault checks)
+            if (_currentFilter !== "All Categories") {
+                const pCat = p.category || "Favorites";
+                if (pCat !== _currentFilter) continue;
+            }
+            if (lowerSearch && !(p.name || "").toLowerCase().includes(lowerSearch)) continue;
+            if (checked) {
+                _selectedForExport.add(i);
+            } else {
+                _selectedForExport.delete(i);
+            }
+        }
+        renderGrid();
+    };
+
+    // Search handler
+    searchInput.addEventListener("input", () => renderGrid());
+
+    // Filter change (batch bar always visible — all categories support batch ops)
+    filterSelect.addEventListener("change", () => {
+        _currentFilter = filterSelect.value;
+        renderGrid();
+    });
+
+    // Batch move
+    async function doBatchMove() {
+        const allFlat = getFlatPrompts();
+        const targetCat = moveSelect.value;
+        const toMove = [];
+        for (const idx of _selectedForExport) {
+            if (allFlat[idx]) {
+                toMove.push(allFlat[idx]);
+            }
+        }
+        if (toMove.length === 0) {
+            showFeedback(body, "No selected prompts to move.", "error");
+            return;
+        }
+        for (const p of toMove) {
+            p.category = targetCat;
+        }
+        // Ensure target category exists in categories list
+        if (!struct.categories.includes(targetCat)) {
+            struct.categories.push(targetCat);
+        }
+        const result = await savePromptsToBackend({
+            categories: struct.categories,
+            prompts: struct.prompts,
+        });
+        if (result && result.success !== false) {
+            _selectedForExport = new Set();
+            renderGrid();
+            showFeedback(body, `✅ Moved ${toMove.length} prompt${toMove.length > 1 ? "s" : ""} to "${targetCat}".`);
+        } else {
+            showFeedback(body, "❌ Failed to save. Check console.", "error");
+        }
     }
 
-    const blob = new Blob(
-        [JSON.stringify({ prompts: selected }, null, 2)],
-        { type: "application/json" }
-    );
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `llm_chat_prompts_export_${selected.length}_prompts.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    // Batch remove
+    async function doBatchRemove() {
+        const allFlat = getFlatPrompts();
+        const toRemove = [];
+        for (const idx of _selectedForExport) {
+            if (allFlat[idx]) {
+                toRemove.push(allFlat[idx]);
+            }
+        }
+        if (toRemove.length === 0) {
+            showFeedback(body, "No selected prompts to remove.", "error");
+            return;
+        }
+        const names = toRemove.map(p => `"${p.name}"`).join(", ");
+        const confirmed = await showConfirmDialog(
+            "Remove Selected",
+            `Are you sure you want to permanently delete ${toRemove.length} prompt${toRemove.length > 1 ? "s" : ""}?`,
+            "Remove",
+            "llm-manager-btn-danger"
+        );
+        if (!confirmed) return;
 
-    const body = document.querySelector(".llm-manager-body");
-    if (body) showFeedback(body, `✅ Exported ${selected.length} prompt${selected.length > 1 ? "s" : ""} successfully!`);
+        // Remove from prompts array
+        struct.prompts = struct.prompts.filter(p =>
+            !toRemove.some(r => r.name === p.name && r.prompt === p.prompt)
+        );
+        const result = await savePromptsToBackend({
+            categories: struct.categories,
+            prompts: struct.prompts,
+        });
+        if (result && result.success !== false) {
+            _selectedForExport = new Set();
+            renderGrid();
+            showFeedback(body, `✅ Removed ${toRemove.length} prompt${toRemove.length > 1 ? "s" : ""}.`);
+        } else {
+            showFeedback(body, "❌ Failed to save. Check console.", "error");
+        }
+    }
+
+    // Export All
+    async function doExportAll() {
+        const exportData = await exportAllPromptsApi();
+        if (!exportData) {
+            showFeedback(body, "❌ Failed to export prompts.", "error");
+            return;
+        }
+        const blob = new Blob(
+            [JSON.stringify(exportData, null, 2)],
+            { type: "application/json" }
+        );
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `llm_chat_prompts_export_all.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showFeedback(body, `✅ Exported all ${exportData.prompts.length} prompts with categories.`);
+    }
+
+    // Export Selected
+    function doExportSelected(allFlat) {
+        const selected = [];
+        for (const idx of _selectedForExport) {
+            if (allFlat[idx]) {
+                selected.push({
+                    name: allFlat[idx].name,
+                    prompt: allFlat[idx].prompt,
+                    category: allFlat[idx].category || "Favorites",
+                });
+            }
+        }
+        if (selected.length === 0) {
+            showFeedback(body, "No prompts selected.", "error");
+            return;
+        }
+        const blob = new Blob(
+            [JSON.stringify({ prompts: selected }, null, 2)],
+            { type: "application/json" }
+        );
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `llm_chat_prompts_export_${selected.length}_prompts.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showFeedback(body, `✅ Exported ${selected.length} prompt${selected.length > 1 ? "s" : ""} successfully!`);
+    }
+
+    // ── Assemble ──
+    body.appendChild(batchBar);
+    body.appendChild(grid);
+
+    // Initial render
+    renderGrid();
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Card: Create a single prompt card element
+// ────────────────────────────────────────────────────────────────────────
+// ALL cards get full controls: checkbox, edit, category selector, reorder arrows.
+// No _isDefault flags, no "🔒 default" badges, no special system view.
+
+function createCard(p, flatIdx, struct, onRefresh) {
+    const card = document.createElement("div");
+    card.className = "llm-manager-card";
+
+    // ── Action row ──
+    const actions = document.createElement("div");
+    actions.className = "llm-manager-card-actions";
+
+    // Checkbox (always visible for all prompts)
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "llm-manager-checkbox";
+    checkbox.checked = _selectedForExport.has(flatIdx);
+    checkbox.onchange = () => {
+        if (checkbox.checked) {
+            _selectedForExport.add(flatIdx);
+        } else {
+            _selectedForExport.delete(flatIdx);
+        }
+        onRefresh();
+    };
+    actions.appendChild(checkbox);
+
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "llm-manager-btn-icon";
+    copyBtn.textContent = "📋";
+    copyBtn.title = "Copy prompt text";
+    copyBtn.onclick = async () => {
+        try {
+            await navigator.clipboard.writeText(p.prompt || "");
+            showFeedback(
+                document.querySelector(".llm-manager-body"),
+                "✅ Copied to clipboard!",
+                "success"
+            );
+        } catch (_e) {
+            // Fallback
+            const ta = document.createElement("textarea");
+            ta.value = p.prompt || "";
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand("copy");
+            document.body.removeChild(ta);
+            showFeedback(
+                document.querySelector(".llm-manager-body"),
+                "✅ Copied to clipboard!",
+                "success"
+            );
+        }
+    };
+    actions.appendChild(copyBtn);
+
+    // Edit button (always visible)
+    const editBtn = document.createElement("button");
+    editBtn.className = "llm-manager-btn-ghost";
+    editBtn.textContent = "✏️";
+    editBtn.title = "Edit";
+    editBtn.onclick = () => {
+        const body = document.querySelector(".llm-manager-body");
+        const footer = document.querySelector(".llm-manager-footer");
+        if (body && footer) {
+            showPromptEditor(body, footer, struct, flatIdx, false);
+        }
+    };
+    actions.appendChild(editBtn);
+
+    // No "🔒 default" badge — all prompts are editable
+
+    card.appendChild(actions);
+
+    // ── Title ──
+    const title = document.createElement("div");
+    title.className = "llm-manager-card-title";
+    title.textContent = p.name || "(unnamed)";
+    card.appendChild(title);
+
+    // ── Text preview (truncated) ──
+    const textEl = document.createElement("div");
+    textEl.className = "llm-manager-card-text";
+    const fullText = p.prompt || "";
+    const snippet = fullText.substring(0, 120).replace(/\n/g, " ");
+    textEl.textContent = snippet + (fullText.length > 120 ? "..." : "");
+    textEl.title = fullText;
+    textEl.onclick = () => {
+        textEl.classList.toggle("expanded");
+        if (textEl.classList.contains("expanded")) {
+            textEl.textContent = fullText;
+        } else {
+            textEl.textContent = snippet + (fullText.length > 120 ? "..." : "");
+        }
+    };
+    card.appendChild(textEl);
+
+    // ── Footer row: category dropdown + char count + arrows ──
+    const cardFooter = document.createElement("div");
+    cardFooter.className = "llm-manager-card-footer";
+
+    // Category selector (always visible for all prompts)
+    const catSelect = document.createElement("select");
+    catSelect.className = "llm-manager-card-cat-select";
+    const cats = struct.categories || [LOCKED_CATEGORY];
+    for (const cat of cats) {
+        const opt = document.createElement("option");
+        opt.value = cat;
+        opt.textContent = cat;
+        if (cat === (p.category || "Favorites")) opt.selected = true;
+        catSelect.appendChild(opt);
+    }
+    catSelect.onchange = async () => {
+        p.category = catSelect.value;
+        // Ensure category exists in struct
+        if (!struct.categories.includes(p.category)) {
+            struct.categories.push(p.category);
+        }
+        const result = await savePromptsToBackend({
+            categories: struct.categories,
+            prompts: struct.prompts,
+        });
+        if (result && result.success !== false) {
+            onRefresh();
+        } else {
+            showFeedback(
+                document.querySelector(".llm-manager-body"),
+                "❌ Failed to save category change.",
+                "error"
+            );
+        }
+    };
+    cardFooter.appendChild(catSelect);
+
+    // Spacer
+    const spacer2 = document.createElement("span");
+    spacer2.style.flex = "1";
+    cardFooter.appendChild(spacer2);
+
+    // Char count
+    const chars = document.createElement("span");
+    chars.className = "llm-manager-card-chars";
+    chars.textContent = `${fullText.length} chars`;
+    cardFooter.appendChild(chars);
+
+    // Reorder arrows (always visible for all prompts)
+    const arrLeft = document.createElement("button");
+    arrLeft.className = "llm-manager-btn-icon";
+    arrLeft.textContent = "◀";
+    arrLeft.title = "Move earlier in this category";
+    arrLeft.onclick = () => reorderPrompt(p, -1);
+    cardFooter.appendChild(arrLeft);
+
+    const arrRight = document.createElement("button");
+    arrRight.className = "llm-manager-btn-icon";
+    arrRight.textContent = "▶";
+    arrRight.title = "Move later in this category";
+    arrRight.onclick = () => reorderPrompt(p, 1);
+    cardFooter.appendChild(arrRight);
+
+    card.appendChild(cardFooter);
+
+    return card;
+
+    // ── Reorder helper ──
+    async function reorderPrompt(targetP, direction) {
+        const arr = struct.prompts;
+        const idx = arr.findIndex(cp => cp.name === targetP.name && cp.prompt === targetP.prompt);
+        if (idx === -1) return;
+        const newIdx = idx + direction;
+        if (newIdx < 0 || newIdx >= arr.length) return;
+        [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
+        const result = await savePromptsToBackend({
+            categories: struct.categories,
+            prompts: struct.prompts,
+        });
+        if (result && result.success !== false) {
+            onRefresh();
+        } else {
+            // Revert
+            [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Category Manager Modal
+// ────────────────────────────────────────────────────────────────────────
+
+async function showCategoryManager(body, footer, struct) {
+    // Overlay
+    const overlay = document.createElement("div");
+    overlay.className = "llm-manager-confirm-overlay";
+
+    const panel = document.createElement("div");
+    panel.className = "llm-manager-confirm-panel";
+    panel.style.width = "400px";
+    panel.style.maxHeight = "70vh";
+    panel.style.overflow = "auto";
+
+    const titleEl = document.createElement("div");
+    titleEl.className = "llm-manager-confirm-title";
+    titleEl.textContent = "Manage Categories";
+    panel.appendChild(titleEl);
+
+    const listEl = document.createElement("div");
+    listEl.style.marginBottom = "12px";
+
+    function renderCatList() {
+        listEl.innerHTML = "";
+        const cats = struct.categories || [LOCKED_CATEGORY];
+
+        for (let i = 0; i < cats.length; i++) {
+            const cat = cats[i];
+            const row = document.createElement("div");
+            row.className = "llm-manager-cat-row";
+
+            // Reorder buttons
+            const upBtn = document.createElement("button");
+            upBtn.className = "llm-manager-btn-icon";
+            upBtn.textContent = "↑";
+            upBtn.disabled = i === 0 || cat === LOCKED_CATEGORY;
+            upBtn.onclick = () => moveCat(i, -1);
+            row.appendChild(upBtn);
+
+            const downBtn = document.createElement("button");
+            downBtn.className = "llm-manager-btn-icon";
+            downBtn.textContent = "↓";
+            downBtn.disabled = i === cats.length - 1 || cat === LOCKED_CATEGORY;
+            downBtn.onclick = () => moveCat(i, 1);
+            row.appendChild(downBtn);
+
+            // Name
+            const nameSpan = document.createElement("span");
+            nameSpan.textContent = cat;
+            nameSpan.style.flex = "1";
+            nameSpan.style.padding = "0 6px";
+            row.appendChild(nameSpan);
+
+            // Rename/Delete buttons (not for LOCKED_CATEGORY)
+            if (cat !== LOCKED_CATEGORY) {
+                const renameBtn = document.createElement("button");
+                renameBtn.className = "llm-manager-btn-ghost";
+                renameBtn.textContent = "✏️";
+                renameBtn.title = "Rename";
+                renameBtn.onclick = async () => {
+                    const newName = prompt(`Rename "${cat}" to:`, cat);
+                    if (!newName || newName.trim() === cat || !newName.trim()) return;
+                    const trimmed = newName.trim();
+                    cats[i] = trimmed;
+                    // Update prompts with old category name
+                    for (const p of struct.prompts) {
+                        if (p.category === cat) {
+                            p.category = trimmed;
+                        }
+                    }
+                    await saveAndRefresh();
+                };
+                row.appendChild(renameBtn);
+
+                const delBtn = document.createElement("button");
+                delBtn.className = "llm-manager-btn-icon";
+                delBtn.textContent = "🗑";
+                delBtn.title = `Delete "${cat}" (prompts → Favorites)`;
+                delBtn.onclick = async () => {
+                    const count = struct.prompts.filter(p => p.category === cat).length;
+                    const msg = count > 0
+                        ? `Delete "${cat}"? ${count} prompt${count > 1 ? "s" : ""} will be moved to "Favorites".`
+                        : `Delete empty category "${cat}"?`;
+                    const confirmed = await showConfirmDialog(
+                        "Delete Category",
+                        msg,
+                        "Delete Category",
+                        "llm-manager-btn-danger"
+                    );
+                    if (!confirmed) return;
+                    const result = await deleteCategoryApi(cat, "Favorites");
+                    if (result && result.success !== false) {
+                        struct.categories = result.categories || struct.categories.filter(c => c !== cat);
+                        struct.prompts = result.prompts || struct.prompts;
+                        renderCatList();
+                    }
+                };
+                row.appendChild(delBtn);
+            } else {
+                // "System Prompts" badge
+                const badge = document.createElement("span");
+                badge.className = "llm-manager-default-badge";
+                badge.textContent = "🔒 fixed";
+                row.appendChild(badge);
+            }
+
+            listEl.appendChild(row);
+        }
+    }
+
+    async function moveCat(idx, direction) {
+        const cats = struct.categories;
+        // Don't allow moving LOCKED_CATEGORY
+        if (cats[idx] === LOCKED_CATEGORY) return;
+        const newIdx = idx + direction;
+        if (newIdx < 0 || newIdx >= cats.length) return;
+        // Don't allow moving past LOCKED_CATEGORY (it should stay last)
+        if (cats[newIdx] === LOCKED_CATEGORY) return;
+        [cats[idx], cats[newIdx]] = [cats[newIdx], cats[idx]];
+        await saveAndRefresh();
+    }
+
+    async function saveAndRefresh() {
+        const result = await saveCategoriesApi(struct.categories);
+        if (result && result.success !== false) {
+            struct.categories = result.categories || struct.categories;
+            struct.prompts = result.prompts || struct.prompts;
+            renderCatList();
+        }
+    }
+
+    renderCatList();
+    panel.appendChild(listEl);
+
+    // Add category button
+    const addCatBtn = document.createElement("button");
+    addCatBtn.className = "llm-manager-btn llm-manager-btn-primary";
+    addCatBtn.textContent = "+ Add Category";
+    addCatBtn.style.width = "100%";
+    addCatBtn.onclick = async () => {
+        const name = prompt("New category name:");
+        if (!name || !name.trim()) return;
+        const trimmed = name.trim();
+        if (struct.categories.includes(trimmed)) {
+            alert(`Category "${trimmed}" already exists.`);
+            return;
+        }
+        // Insert before LOCKED_CATEGORY to keep it last
+        struct.categories.splice(struct.categories.length - 1, 0, trimmed);
+        await saveAndRefresh();
+    };
+    panel.appendChild(addCatBtn);
+
+    // Close button
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "llm-manager-btn";
+    closeBtn.textContent = "Close";
+    closeBtn.style.marginTop = "12px";
+    closeBtn.style.width = "100%";
+    closeBtn.onclick = () => {
+        document.body.removeChild(overlay);
+    };
+    panel.appendChild(closeBtn);
+
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
 }
 
 // ────────────────────────────────────────────────────────────────────────
 // Management Dialog: Show the prompt editor (add/edit form)
 // ────────────────────────────────────────────────────────────────────────
 
-export function showPromptEditor(body, footer, prompts, index, isNew) {
+export function showPromptEditor(body, footer, struct, flatIdx, isNew) {
     body.innerHTML = "";
     footer.innerHTML = "";
+
+    // Find the prompt being edited (flat prompts array — no default/custom split)
+    let editingPrompt = null;
+    if (!isNew && flatIdx !== null) {
+        const allFlat = struct.prompts || [];
+        editingPrompt = allFlat[flatIdx];
+    }
 
     const backBtn = document.createElement("button");
     backBtn.className = "llm-manager-btn";
@@ -432,9 +929,28 @@ export function showPromptEditor(body, footer, prompts, index, isNew) {
     const nameInput = document.createElement("input");
     nameInput.type = "text";
     nameInput.className = "llm-manager-input";
-    nameInput.value = prompts[index]?.name || "";
+    nameInput.value = editingPrompt?.name || "";
     nameInput.placeholder = "e.g. My Custom Prompt";
     form.appendChild(nameInput);
+
+    // Category selector
+    const catLabel = document.createElement("div");
+    catLabel.className = "llm-manager-label";
+    catLabel.textContent = "Category:";
+    form.appendChild(catLabel);
+
+    const catSelect = document.createElement("select");
+    catSelect.className = "llm-manager-select";
+    catSelect.style.width = "100%";
+    const cats = struct.categories || [LOCKED_CATEGORY];
+    for (const cat of cats) {
+        const opt = document.createElement("option");
+        opt.value = cat;
+        opt.textContent = cat;
+        if (cat === (editingPrompt?.category || "Favorites")) opt.selected = true;
+        catSelect.appendChild(opt);
+    }
+    form.appendChild(catSelect);
 
     // Prompt textarea
     const promptLabel = document.createElement("div");
@@ -444,7 +960,7 @@ export function showPromptEditor(body, footer, prompts, index, isNew) {
 
     const promptInput = document.createElement("textarea");
     promptInput.className = "llm-manager-textarea";
-    promptInput.value = prompts[index]?.prompt || "";
+    promptInput.value = editingPrompt?.prompt || "";
     promptInput.placeholder = "Enter your system prompt text here...";
     form.appendChild(promptInput);
 
@@ -464,6 +980,7 @@ export function showPromptEditor(body, footer, prompts, index, isNew) {
     saveBtn.onclick = async () => {
         const newName = nameInput.value.trim();
         const newPrompt = promptInput.value.trim();
+        const newCategory = catSelect.value;
 
         if (!newName || !newPrompt) {
             warning.style.display = "block";
@@ -471,22 +988,52 @@ export function showPromptEditor(body, footer, prompts, index, isNew) {
         }
         warning.style.display = "none";
 
-        const dupIndex = prompts.findIndex((p, i) => i !== index && p.name === newName);
-        if (dupIndex >= 0) {
-            const confirmed = await showConfirmDialog(
-                "Overwrite?",
-                `A prompt named "${newName}" already exists. Overwrite it?`
-            );
-            if (!confirmed) return;
-            prompts.splice(dupIndex, 1);
-            if (dupIndex < index) index--;
+        if (isNew) {
+            // Check for duplicate name in prompts
+            const dup = struct.prompts.find(p => p.name === newName);
+            if (dup) {
+                const confirmed = await showConfirmDialog(
+                    "Overwrite?",
+                    `A prompt named "${newName}" already exists. Overwrite it?`,
+                    "Overwrite",
+                    "llm-manager-btn-primary"
+                );
+                if (!confirmed) return;
+                // Remove the duplicate
+                struct.prompts = struct.prompts.filter(p => p.name !== newName);
+            }
+            // Add new prompt
+            struct.prompts.push({
+                name: newName,
+                prompt: newPrompt,
+                category: newCategory,
+            });
+        } else {
+            // Update existing prompt (all prompts are directly editable — no default/custom split)
+            if (editingPrompt) {
+                const idx = struct.prompts.findIndex(p =>
+                    p.name === editingPrompt.name && p.prompt === editingPrompt.prompt
+                );
+                if (idx >= 0) {
+                    struct.prompts[idx] = {
+                        name: newName,
+                        prompt: newPrompt,
+                        category: newCategory,
+                    };
+                }
+            }
         }
 
-        prompts[index] = { name: newName, prompt: newPrompt };
+        // Ensure category exists in categories list
+        if (!struct.categories.includes(newCategory)) {
+            struct.categories.push(newCategory);
+        }
 
-        const ok = await savePromptsToBackend(prompts);
-        if (ok) {
-            refreshAllTemplateWidgets(prompts);
+        const result = await savePromptsToBackend({
+            categories: struct.categories,
+            prompts: struct.prompts,
+        });
+        if (result && result.success !== false) {
             renderPromptManager(body, footer);
         } else {
             showFeedback(body, "Failed to save. Check console for details.", "error");
@@ -501,7 +1048,7 @@ export function showPromptEditor(body, footer, prompts, index, isNew) {
 // Import Dialog: File picker + strategy + preview + import
 // ────────────────────────────────────────────────────────────────────────
 
-function showImportDialog(body, footer, currentPrompts) {
+function showImportDialog(body, footer, struct) {
     body.innerHTML = "";
     footer.innerHTML = "";
 
@@ -582,7 +1129,9 @@ function showImportDialog(body, footer, currentPrompts) {
         const result = await importPromptsFromFile(file, strategy);
 
         if (result && result.success) {
-            refreshAllTemplateWidgets(result.prompts);
+            // Update struct from response
+            struct.categories = result.categories || struct.categories;
+            struct.prompts = result.prompts || struct.prompts;
             showFeedback(body, `✅ Imported ${result.imported_count} prompt${result.imported_count !== 1 ? "s" : ""}` +
                 (result.skipped_count > 0 ? ` (${result.skipped_count} skipped)` : ""), "success");
             // Return to list after short delay
@@ -596,6 +1145,157 @@ function showImportDialog(body, footer, currentPrompts) {
     form.appendChild(importBtn);
 
     body.appendChild(form);
+
+    // ── Divider ──
+    const divider = document.createElement("hr");
+    divider.style.cssText = "margin: 20px 0; border: none; border-top: 1px solid #444;";
+    body.appendChild(divider);
+
+    const orLabel = document.createElement("div");
+    orLabel.style.cssText = "text-align: center; color: #888; font-size: 12px; margin: -10px 0 16px;";
+    orLabel.textContent = "── or ──";
+    body.appendChild(orLabel);
+
+    // ── Section 2: Import from .txt / .md files ──
+    const textForm = document.createElement("div");
+    textForm.className = "llm-manager-form";
+
+    const textSectionTitle = document.createElement("div");
+    textSectionTitle.style.cssText = "font-weight: bold; margin-bottom: 8px; font-size: 14px;";
+    textSectionTitle.textContent = "📂 Import from .txt / .md Files";
+    textForm.appendChild(textSectionTitle);
+
+    const textDesc = document.createElement("div");
+    textDesc.style.cssText = "color: #888; font-size: 11px; margin-bottom: 12px;";
+    textDesc.textContent = "Each file becomes a prompt — filename → name, content → prompt text.";
+    textForm.appendChild(textDesc);
+
+    // Category selector
+    const catLabel = document.createElement("div");
+    catLabel.className = "llm-manager-label";
+    catLabel.textContent = "Target category:";
+    textForm.appendChild(catLabel);
+
+    const catSelect = document.createElement("select");
+    catSelect.className = "llm-manager-select";
+    catSelect.style.width = "100%";
+    // Populate from existing categories
+    const cats = struct.categories || ["Favorites"];
+    for (const c of cats) {
+        if (c === "System Prompts") continue; // skip locked category
+        const opt = document.createElement("option");
+        opt.value = c;
+        opt.textContent = c;
+        catSelect.appendChild(opt);
+    }
+    textForm.appendChild(catSelect);
+
+    // File picker (multiple .txt/.md)
+    const textFileInput = document.createElement("input");
+    textFileInput.type = "file";
+    textFileInput.className = "llm-manager-file-input";
+    textFileInput.accept = ".txt,.md";
+    textFileInput.multiple = true;
+
+    const textFileBtn = document.createElement("button");
+    textFileBtn.className = "llm-manager-btn";
+    textFileBtn.textContent = "📂 Choose .txt / .md Files...";
+    textFileBtn.style.marginTop = "8px";
+    textFileBtn.onclick = () => textFileInput.click();
+    textForm.appendChild(textFileBtn);
+
+    const textFileNameDisplay = document.createElement("span");
+    textFileNameDisplay.style.cssText = "color: #888; font-size: 11px; margin-left: 8px;";
+    textFileNameDisplay.textContent = "No files selected";
+    textForm.appendChild(textFileNameDisplay);
+
+    // Preview area (hidden until files selected)
+    const textPreviewContainer = document.createElement("div");
+    textPreviewContainer.style.display = "none";
+    textPreviewContainer.style.marginTop = "8px";
+    textForm.appendChild(textPreviewContainer);
+
+    // Import button (disabled until files selected)
+    const textImportBtn = document.createElement("button");
+    textImportBtn.className = "llm-manager-btn llm-manager-btn-primary";
+    textImportBtn.textContent = "📥 Import as Prompts";
+    textImportBtn.style.width = "100%";
+    textImportBtn.style.padding = "8px";
+    textImportBtn.style.marginTop = "8px";
+    textImportBtn.disabled = true;
+    textImportBtn.onclick = async () => {
+        const files = textFileInput.files;
+        if (!files || files.length === 0) return;
+
+        textImportBtn.disabled = true;
+        textImportBtn.textContent = "Importing...";
+
+        const category = catSelect.value;
+        const fileArray = Array.from(files);
+        const result = await importTextFilesAsPrompts(fileArray, category);
+
+        if (result && result.success) {
+            struct.categories = result.categories || struct.categories;
+            struct.prompts = result.prompts || struct.prompts;
+            showFeedback(body, `✅ Imported ${result.imported_count} prompt${result.imported_count !== 1 ? "s" : ""} into "${category}"` +
+                (result.skipped_count > 0 ? ` (${result.skipped_count} skipped)` : ""), "success");
+            setTimeout(() => renderPromptManager(body, footer), 1500);
+        } else {
+            textImportBtn.disabled = false;
+            textImportBtn.textContent = "📥 Import as Prompts";
+            showFeedback(body, "❌ Import failed. Check the console for details.", "error");
+        }
+    };
+    textForm.appendChild(textImportBtn);
+
+    body.appendChild(textForm);
+
+    // File selected handler for text files
+    textFileInput.addEventListener("change", () => {
+        const files = textFileInput.files;
+        if (!files || files.length === 0) {
+            textFileNameDisplay.textContent = "No files selected";
+            textImportBtn.disabled = true;
+            textPreviewContainer.style.display = "none";
+            return;
+        }
+
+        textFileNameDisplay.textContent = `📄 ${files.length} file${files.length !== 1 ? "s" : ""} selected`;
+        textImportBtn.disabled = false;
+
+        // Build preview
+        textPreviewContainer.style.display = "block";
+        let previewHtml = '<div class="llm-manager-label" style="margin-top:8px;">Preview:</div>';
+        previewHtml += '<div class="llm-manager-import-preview">';
+
+        const maxPreview = 20;
+        const shown = Math.min(files.length, maxPreview);
+        for (let i = 0; i < shown; i++) {
+            const f = files[i];
+            const name = f.name.replace(/\.[^.]+$/, "");
+            // Show names first; content snippets fill in asynchronously below
+            previewHtml += `• <strong>${name.replace(/</g, "<")}</strong> — <span id="txt-preview-${i}">(reading...)</span><br>`;
+        }
+        if (files.length > maxPreview) {
+            previewHtml += `<br>... and ${files.length - maxPreview} more`;
+        }
+        previewHtml += "</div>";
+        textPreviewContainer.innerHTML = previewHtml;
+
+        // Read each file's first chunk for the preview
+        for (let i = 0; i < shown; i++) {
+            const f = files[i];
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const content = e.target.result;
+                const snippet = (content || "").substring(0, 60).replace(/</g, "<");
+                const span = document.getElementById(`txt-preview-${i}`);
+                if (span) span.textContent = snippet + (content.length > 60 ? "..." : "");
+            };
+            // Read just first 200 chars for speed
+            reader.readAsText(f.slice(0, 200));
+        }
+    });
 
     // File selected handler
     fileInput.addEventListener("change", () => {
@@ -618,16 +1318,26 @@ function showImportDialog(body, footer, currentPrompts) {
                 const imported = Array.isArray(data) ? data : (data.prompts || []);
                 const validCount = imported.filter(p => p && p.name && p.prompt).length;
 
+                // Detect unique categories in imported data
+                const uniqueCats = new Set();
+                for (const p of imported) {
+                    if (p.category) uniqueCats.add(p.category);
+                }
+                const catInfo = uniqueCats.size > 0
+                    ? `<br>Categories detected: ${[...uniqueCats].join(", ")}`
+                    : "<br>No category data — prompts will default to 'Favorites'";
+
                 previewContainer.style.display = "block";
                 previewContainer.innerHTML = `
                     <div class="llm-manager-label" style="margin-top:8px;">Preview:</div>
                     <div class="llm-manager-import-preview">
                         Found <strong>${imported.length}</strong> prompt${imported.length !== 1 ? "s" : ""} in file
-                        (${validCount} valid)
+                        (${validCount} valid)${catInfo}
                         <br><br>
                         ${imported.slice(0, 10).map(p =>
-                            `• <strong>${(p.name || "?").replace(/</g, "<")}</strong> — ` +
-                            `${(p.prompt || "").substring(0, 50).replace(/</g, "<")}...`
+                            `• <strong>${(p.name || "?").replace(/</g, "<")}</strong>` +
+                            (p.category ? ` [${p.category.replace(/</g, "<")}]` : "") +
+                            ` — ${(p.prompt || "").substring(0, 50).replace(/</g, "<")}...`
                         ).join("<br>")}
                         ${imported.length > 10 ? `<br>... and ${imported.length - 10} more` : ""}
                     </div>

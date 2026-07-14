@@ -542,6 +542,15 @@ export function openModelBrowserPopup(node) {
         card.appendChild(badgesEl);
 
         card.onclick = () => selectModel(file);
+        card.ondblclick = (e) => {
+            e.preventDefault();
+            // Cancel any in-flight mmproj auto-detection so Apply is not blocked.
+            // selectModel() sets selectedFilePath synchronously before the async
+            // auto-detect — the two in-flight auto-detects will finish in the
+            // background but their results are irrelevant since we're applying now.
+            node._mmprojDetecting = false;
+            applyBtn.click();
+        };
         return card;
     }
 
@@ -888,6 +897,9 @@ export function openModelBrowserPopup(node) {
     // ── Initial load ───────────────────────────────────────────────────
     refreshDirList();
 
+    // Auto-focus search input so the user can start typing immediately
+    searchInput.focus();
+
     // ═══════════════════════════════════════════════════════════════════
     // FOOTER BUTTONS
     // ═══════════════════════════════════════════════════════════════════
@@ -1001,24 +1013,16 @@ export function openModelBrowserPopup(node) {
             chatHeaderTitle.textContent = `🤖 EasyLLM${newName ? ` | ${newName}` : ""}`;
         }
 
-        // ── Pre-load model only if vram_mode is keep_loaded ──
+        // ── Unload cached model if vram_mode is keep_loaded ──
+        // Free VRAM immediately so the old model doesn't linger while
+        // the user navigates the model browser or queues a new prompt.
         const vramW = node.widgets?.find(w => w.name === "vram_mode");
         const vramMode = vramW ? vramW.value : "unload";
         if (vramMode === "keep_loaded") {
-            const nGpuW = node.widgets?.find(w => w.name === "n_gpu_layers");
-            const nCtxW = node.widgets?.find(w => w.name === "n_ctx");
-            const mlockW = node.widgets?.find(w => w.name === "use_mlock");
-            fetch("/easyllm/preload_model", {
+            fetch("/easyllm/unload_model_cache", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    model_path: selectedPath,
-                    mmproj_path: selectedMmproj,
-                    n_gpu_layers: nGpuW ? nGpuW.value : -1,
-                    use_mlock: mlockW ? mlockW.value : true,
-                    n_ctx: nCtxW ? nCtxW.value : 4096,
-                }),
-            }).catch(() => {}); // fire-and-forget — ignore errors
+            }).catch(() => {}); // best-effort — ignore errors
         }
 
         // Save paired entry to recent list

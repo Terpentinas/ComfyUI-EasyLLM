@@ -45,6 +45,36 @@ This custom node suite provides a complete local AI workspace embedded inside Co
 
 ---
 
+## 📸 Screenshots
+
+### Main Node & Chat Popup
+
+![Main Node on Canvas](media/main%20-node.png)
+
+![Chat Popup Interface](media/chat-pop-up.png)
+
+### Model Browser & Prompt Library
+
+![GGUF Model Browser](media/model-browser-pop-up.png)
+
+![System Prompt Library](media/Prompt-Library.png)
+
+### Settings, History & Database
+
+![Settings Popup](media/setting-pop-up.png)
+
+![Database Manager](media/database-manager.png)
+
+![Enhancer History](media/enhancher-history-pop-up.png)
+
+### 🎥 Demo Video
+
+[![Simple Chat Demo](media/chat-pop-up.png)](media/simple-chat.mp4)
+
+> Click the image above to watch the streaming chat demo.
+
+---
+
 ## Table of Contents
 
 - [Quick Start](#quick-start)
@@ -130,6 +160,8 @@ Most ComfyUI LLM nodes give you a single `system_prompt` text widget. EasyLLM gi
 3. Or click **⚙ Manage Prompts...** on the node canvas
 
 The management dialog connects to the backend API at `/easyllm/prompts/*` and updates all nodes in real-time when you save changes.
+
+![Prompt Management Dialog](media/Prompt-Library.png)
 
 ---
 
@@ -246,6 +278,41 @@ Talk to the LLM model loaded inside your CLIP text encoder. **No additional mode
 | `raw_text` | `STRING` | The raw generated text as decoded from the model (preserves think tags, channel tags) |
 | `clip` | `CLIP` | Original CLIP object, passed through |
 
+| New Output (v2) | Type | Description |
+|-----------------|------|-------------|
+| `image_output` | `IMAGE` | Passthrough of attached image — enables image-to-image workflows via the chat popup |
+
+---
+
+### 🎛️ `LLM_TriggerRouter` — Decompose trigger_prompt JSON
+
+Decomposes the structured `trigger_prompt` JSON from EasyLLM / EasyLLM GGUF into individual sockets. Required for all multi-turn generation workflows.
+
+| Input | Type | Description |
+|-------|------|-------------|
+| `trigger_prompt` | `STRING` (forceInput) | Connect to LLM node's `trigger_prompt` output. Expects JSON with fields: `action`, `prompt`, `negative_prompt`, `session_uuid` |
+
+| Output | Type | Description |
+|--------|------|-------------|
+| `prompt` | `STRING` | The image generation prompt (text to feed to CLIP Text Encode) |
+| `negative_prompt` | `STRING` | Negative prompt for CLIP Text Encode |
+| `session_uuid` | `STRING` | Unique ID for this generation turn — wire to Image Capture for image reconciliation |
+
+---
+
+### 🖼️ `EasyLLM_ImageCapture` — Persist generated images to chat history
+
+Saves generated images to the chat history database, keyed by `session_uuid`. Required for multi-turn generation workflows so generated images appear in the chat popup.
+
+| Input | Type | Description |
+|-------|------|-------------|
+| `images` | `IMAGE` | Connect VAE Decode output |
+| `session_uuid` | `STRING` (forceInput) | Connect Trigger Router's `session_uuid` output |
+
+| Output | Type | Description |
+|--------|------|-------------|
+| `images` | `IMAGE` | Passthrough of input images for downstream nodes (Preview Image, Save Image) |
+
 ---
 
 ### 📄 `EasyLLM Text` — Display output
@@ -316,6 +383,27 @@ Use the Text Utility nodes to clean, transform, and combine LLM output before it
 [EasyLLM GGUF] ──> [🧽 Whitespace Cleaner] ──> [🗃️ Duplicate Remover] ──> [CLIP Text Encode]
 ```
 
+### 🎛️ Multi-Turn Generation with Auto-Queue & Group Router
+
+The **Trigger Router**, **Group Router**, and **Image Capture** nodes enable a powerful multi-turn chat-to-image workflow:
+
+```
+EasyLLM ──trigger_prompt──► Trigger Router ──prompt──► CLIP Text Encode (x2)
+                                      │               └──negative_prompt──► CLIP Text Encode (neg)
+                                      └──session_uuid──► Image Capture ◄── VAE Decode
+```
+
+**How it works:**
+1. The LLM outputs structured JSON via `trigger_prompt` with an `action` field (`generate_image`, `edit_image`, `just_chat`)
+2. The **Trigger Router** decomposes the JSON into individual sockets (prompt, negative_prompt, session_uuid)
+3. The frontend **auto-queues** the full pipeline to the target Image Capture node when image generation is requested
+4. **Image Capture** saves generated images with `session_uuid` for chat history reconciliation
+
+**Loadable example workflows** are in [`example_workflows/`](example_workflows/):
+- [`Enhancer.json`](example_workflows/Enhancer.json) — Single-shot prompt enhancement
+- [`InteractiveChat + Generate.json`](example_workflows/InteractiveChat + Generate.json) — Chat + single `[GENERATE]` group
+- [`InteractiveChat + Generate + Edit.json`](example_workflows/InteractiveChat + Generate + Edit.json) — Chat + `[GENERATE]` + `[EDIT]` groups
+
 ---
 
 ## Chat UI Features
@@ -334,6 +422,10 @@ Double-click the node to open a popup chat window with:
 - **Send button** — queue the workflow with your message
 - **Enter-to-Send** — press Enter to send, Shift+Enter for newline
 - **Token streaming** — responses appear token-by-token in real-time
+
+![Chat Popup in Action](media/chat-pop-up.png)
+
+🎥 **[Watch the streaming chat demo](media/simple-chat.mp4)**
 
 ### Canvas Widgets
 
@@ -480,6 +572,10 @@ Upload an image directly from the **popup chat** — no Load Image node needed. 
 - llama-cpp-python v0.3.23 or newer (auto-checked)
 - A vision-capable GGUF model (LLaVA, BakLLaVA, Qwen-VL, Gemma-3-Vision, etc.)
 - The companion mmproj file
+
+### Image persistence
+
+Images are sent to the model **once** — with the message they're attached to. On subsequent turns, only text from previous messages is preserved. If you need the model to re-examine an image (e.g., follow-up visual questions), re-upload the image with your new question. Make sure you're using a vision-capable model with an mmproj file.
 
 ---
 
@@ -734,6 +830,8 @@ The node calls `torch.cuda.empty_cache()` after generation. If you still get OOM
 
 ### GGUF Model Browser
 
+![GGUF Model Browser](media/model-browser-pop-up.png)
+
 If the GGUF Model Browser doesn't find your models, ensure:
 1. Your `.gguf` files are in a directory ComfyUI searches (e.g., `ComfyUI/models/LLM/`, `ComfyUI/models/GGUF/`)
 2. The model index has been refreshed via the **Refresh** button in the browser
@@ -777,6 +875,8 @@ easyllm/
 ├── streaming.py             # WebSocket push, API routes (/easyllm/*), generation
 ├── prompt_manager.py        # System prompt templates API (/easyllm/prompts/*)
 ├── utils.py                 # Utilities, GGUF model index, text cleaning, chat templates
+├── trigger_router_node.py   # 🎛️ Trigger Router — decomposes trigger_prompt JSON
+├── image_capture_node.py    # 🖼️ Image Capture — persists generated images to DB
 ├── generation_state.py      # Shared generation state (popup tracking, abort, progress)
 ├── cuda_optimizations.py    # GPU-vectorized sample, TF32, torch.compile
 ├── memory_manager.py        # GPU memory management (prepare, offload, restore)
@@ -793,17 +893,40 @@ easyllm/
 │   └── run_launcher.command # macOS double-click
 └── js/
     ├── llm_chat.js          # Main extension entry point
-    ├── constants.js         # NODE_NAMES, shared constants
-    ├── popup_chat.js        # Chat popup modal
-    ├── popup_bubble.js      # Chat bubbles, export, rendering
-    ├── popup_model_browser.js  # GGUF model browser
-    ├── buttons.js           # Canvas button widgets
     ├── api.js               # API layer (prompts, model browser)
-    ├── websocket_bridge.js  # WebSocket streaming
-    ├── history_store.js     # Chat history storage
+    ├── buttons.js           # Canvas button widgets
+    ├── constants.js         # NODE_NAMES, shared constants
+    ├── db_manager.js        # IndexedDB wrapper for local storage
     ├── editor.js            # Prompt management dialog
+    ├── history_store.js     # Chat history storage
     ├── popup.js             # Shared popup utilities
+    ├── popup_bubble.js      # Chat bubbles, export, rendering
+    ├── popup_chat.js        # Chat popup modal
+    ├── popup_model_browser.js  # GGUF model browser
+    ├── popup_settings.js    # Settings popup dialog logic
     ├── popup_utils.js       # Additional popup helpers
+    ├── prompt_select.js     # 📚 Prompt Select — node canvas prompt library
+    ├── text_input.js        # Canvas text input handling
     ├── ui_utils.js          # UI utilities
+    ├── websocket_bridge.js  # WebSocket streaming
     └── llm_chat.css         # Stylesheet
 ```
+
+---
+
+## Configuration
+
+### Overriding Defaults (config_user.py)
+
+Settings in [`config.py`](config.py) can be overridden by creating a `config_user.py` file in the same directory. This lets you persist custom settings across EasyLLM updates without modifying the main config — your overrides survive reinstallation and upgrades.
+
+```python
+# config_user.py — example overrides
+REATTACH_IMAGES = True          # re-attach images across chat turns
+HISTORY_DB_MAX_AGE_DAYS = 30   # auto-delete history older than 30 days
+HISTORY_DB_MAX_SIZE_MB = 200   # cap history DB at 200 MB
+```
+
+Only the variables you explicitly set will be overridden; everything else keeps its default from `config.py`. A malformed `config_user.py` will log a warning and fall back to defaults — it won't crash ComfyUI.
+
+See [`config.py`](config.py) for the full list of configurable settings and their default values.

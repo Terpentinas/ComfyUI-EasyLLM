@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import time
+import weakref
 from typing import Optional
 
 import jinja2.exceptions
@@ -121,6 +122,46 @@ def _messages_have_images(messages: list[dict]) -> bool:
     )
 
 
+def _llama_model_finalizer(model, chat_handler):
+    """Weakref finalizer: safely cleanup C-level resources during GC.
+
+    This is a *module-level* function (not a bound method) to avoid keeping
+    a strong reference to the LlamaCppModel instance.  Called automatically
+    by weakref.finalize when the last strong reference is dropped, or during
+    interpreter exit via atexit fallback.
+
+    Unlike __del__, this function:
+    - Does NOT rely on module globals (logging, torch) that may be None
+      during interpreter shutdown
+    - Is safe to call after CUDA runtime DLL is unloaded
+    - Has an atexit fallback if never called before interpreter exit
+
+    Args:
+        model: The _Llama C++ engine instance (or None).
+        chat_handler: The Llava15ChatHandler instance (or None).
+    """
+    # ── 1. Close chat handler (frees mtmd_ctx / multimodal GPU memory) ──
+    if chat_handler is not None:
+        try:
+            if hasattr(chat_handler, '_exit_stack'):
+                chat_handler._exit_stack.close()
+        except Exception:
+            pass  # Silently ignore — during shutdown, even logging may be unsafe
+
+    # ── 2. Close main model (frees model weights, KV cache, context) ──
+    if model is not None:
+        try:
+            model.close()
+        except Exception:
+            pass  # Silently ignore — CUDA runtime may already be unloaded
+
+    # NOTE: We do NOT call torch.cuda.synchronize() or empty_cache() here.
+    # During interpreter shutdown, the torch module may already be cleaned up.
+    # The explicit unload() method handles PyTorch-side cleanup. This finalizer
+    # only ensures C-level resources are freed — PyTorch will clean up its own
+    # CUDA state during normal Python object GC.
+
+
 class LlamaCppModel:
     """Wraps a GGUF model loaded via llama-cpp-python (C++ inference engine).
 
@@ -150,6 +191,7 @@ class LlamaCppModel:
         n_gpu_layers: int = -1,
         use_mlock: bool = True,
         n_ctx: int = 4096,
+        flash_attn: bool = True,
         verbose: bool = False,
     ):
         if not LLAMA_CPP_AVAILABLE:
@@ -191,12 +233,26 @@ class LlamaCppModel:
         self.n_gpu_layers = n_gpu_layers
         self.use_mlock = use_mlock
         self.n_ctx = n_ctx
+        self.flash_attn = flash_attn
         self.verbose = verbose
         self._model: Optional["_Llama"] = None
         self._metadata: dict = {}
         self._supports_vision: bool = False
         self._chat_handler = None
         self._template_suppressed: bool = False
+
+        # ── Safe finalizer: replaces __del__ ──
+        # weakref.finalize() is more reliable than __del__ because:
+        # 1. It is NOT called during interpreter shutdown when module globals
+        #    may already be None (preventing AttributeError/ImportError crashes)
+        # 2. It IS called as soon as the last strong reference is dropped
+        #    (deterministic, unlike CPython's __del__ which depends on GC)
+        # 3. It uses an atexit fallback if not called before interpreter exit
+        # The callback is a module-level function (not a bound method) to
+        # avoid keeping a strong reference to self via the closure.
+        self._finalizer = weakref.finalize(
+            self, _llama_model_finalizer, self._model, self._chat_handler
+        )
 
     def load(self):
         """Load the GGUF model via llama.cpp C++ engine (GPU if n_gpu_layers > 0, else CPU).
@@ -360,17 +416,207 @@ class LlamaCppModel:
         self._chat_handler = chat_handler
 
         profiler.begin_sub("model_load_total", "llama_constructor")
+
+        # ── Helper: compute fallback n_gpu_layers ──
+        def _reduce_gpu_layers(current: int) -> int:
+            """Reduce n_gpu_layers stepping down from near-full offload.
+
+            If current == -1 (all layers), first retry uses 28 layers.
+            If current > 0, reduces by 4 layers at a time.
+            """
+            if current == -1 or current > 28:
+                return 28
+            return max(0, current - 4)
+
+        # ── Helper: proactive VRAM check ──
+        def _check_vram_before_load(
+            model_file_size_gb: float,
+            requested_layers: int,
+            ctx: int,
+        ) -> int:
+            """Check available VRAM and return a safe n_gpu_layers value.
+
+            If there isn't enough contiguous free VRAM for the requested GPU
+            offload, this returns a reduced layer count (or 0 for CPU-only).
+            This prevents C-level access violations in llama.cpp's CUDA allocator
+            that can corrupt the driver context and crash the process fatally.
+
+            Returns:
+                Adjusted n_gpu_layers (0 = CPU-only, unchanged if enough VRAM).
+            """
+            if requested_layers == 0 or not torch.cuda.is_available():
+                return requested_layers
+            try:
+                total = torch.cuda.get_device_properties(0).total_memory
+                free = total - torch.cuda.memory_allocated()
+                # Rough estimate: model weights at ~1 byte/param for Q8_0,
+                # plus ~0.5 GiB overhead for KV cache and CUDA context.
+                # Scale by GPU layer ratio.
+                n_layers_total = 40  # rough upper bound for 4B model
+                if requested_layers == -1:
+                    layer_ratio = 1.0
+                else:
+                    layer_ratio = requested_layers / n_layers_total
+                est_vram_needed = (
+                    model_file_size_gb * layer_ratio * 1.15  # weights + 15% overhead
+                    + 0.5  # KV cache + CUDA context
+                )
+                # Leave 10% headroom
+                free_gb = free / (1024**3)
+                if free_gb < est_vram_needed * 1.1:
+                    # Not enough VRAM — try to find a sustainable layer count
+                    if free_gb > 1.5:
+                        # Enough for partial offload: scale layers proportionally
+                        safe_ratio = (free_gb - 0.5) / (model_file_size_gb * 1.15)
+                        safe_layers = max(0, min(
+                            int(safe_ratio * n_layers_total),
+                            28 if requested_layers == -1 else requested_layers
+                        ))
+                        logging.warning(
+                            f"[LLM Chat GGUF] Proactive VRAM check: "
+                            f"free={free_gb:.1f} GiB < needed={est_vram_needed:.1f} GiB. "
+                            f"Reducing n_gpu_layers from {requested_layers} "
+                            f"to {safe_layers} to prevent CUDA crash."
+                        )
+                        return safe_layers
+                    else:
+                        # Very tight — go CPU-only proactively
+                        logging.warning(
+                            f"[LLM Chat GGUF] Proactive VRAM check: "
+                            f"free={free_gb:.1f} GiB insufficient for GPU offload. "
+                            f"Forcing CPU-only (n_gpu_layers=0) to prevent CUDA crash."
+                        )
+                        return 0
+            except Exception:
+                pass
+            return requested_layers
+
+        # ── Proactive VRAM check before first _Llama() call ──
+        # This prevents the C-level access violation that corrupts
+        # the CUDA driver and causes uncatchable Windows fatal exceptions.
+        import os as _os
+        _file_size_gb = 0.0
         try:
-            self._model = _Llama(
-                model_path=self.model_path,
-                chat_handler=chat_handler,
-                n_gpu_layers=self.n_gpu_layers,
-                use_mlock=self.use_mlock,
-                n_ctx=self.n_ctx,
-                verbose=self.verbose,
-                n_batch=1024,       # Larger batch speeds up prompt evaluation
-                n_ubatch=512,       # Micro-batch for memory efficiency (half of n_batch)
-            )
+            _file_size_gb = _os.path.getsize(self.model_path) / (1024**3)
+        except Exception:
+            pass
+        _prechecked_layers = _check_vram_before_load(
+            _file_size_gb, self.n_gpu_layers, self.n_ctx
+        )
+
+        # ── Retry loop ──
+        ctx_to_try = self.n_ctx
+        layers_to_try = _prechecked_layers  # Use pre-checked value
+        offload_kqv_to_try = True
+        fallback_occurred = _prechecked_layers != self.n_gpu_layers
+        _has_oserror = False
+
+        try:
+            while True:
+                try:
+                    self._model = _Llama(
+                        model_path=self.model_path,
+                        chat_handler=chat_handler,
+                        n_gpu_layers=layers_to_try,
+                        use_mlock=self.use_mlock,
+                        n_ctx=ctx_to_try,
+                        verbose=self.verbose,
+                        n_batch=1024,
+                        n_ubatch=512,
+                        flash_attn=self.flash_attn,
+                        offload_kqv=offload_kqv_to_try,
+                    )
+                    break  # Success!
+                except ValueError as _ctx_e:
+                    err_str = str(_ctx_e)
+                    if "Failed to create llama_context" not in err_str:
+                        raise  # Different ValueError — propagate to outer try
+
+                    # ── Clean up CUDA state before retrying ──
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                            torch.cuda.empty_cache()
+                    except Exception:
+                        pass
+
+                    # ── Level 1: Try reducing GPU layers (preserves n_ctx) ──
+                    if layers_to_try != 0:
+                        new_layers = _reduce_gpu_layers(layers_to_try)
+                        if new_layers < layers_to_try:
+                            fallback_occurred = True
+                            logging.warning(
+                                f"[LLM Chat GGUF] VRAM allocation failed at "
+                                f"n_ctx={ctx_to_try}, n_gpu_layers={layers_to_try}. "
+                                f"Retrying with n_gpu_layers={new_layers}..."
+                            )
+                            layers_to_try = new_layers
+                            continue
+
+                    # ── Level 2: Halve n_ctx as last resort (CPU mode) ──
+                    layers_to_try = 0
+                    offload_kqv_to_try = False
+                    new_ctx = ctx_to_try // 2
+                    if new_ctx >= 512:
+                        fallback_occurred = True
+                        logging.warning(
+                            f"[LLM Chat GGUF] GPU offload exhausted. "
+                            f"Reducing n_ctx from {ctx_to_try} to {new_ctx} "
+                            f"as last resort..."
+                        )
+                        ctx_to_try = new_ctx
+                        continue
+
+                    # ── Give up ──
+                    raise RuntimeError(
+                        f"Cannot load model — even at n_ctx=512, n_gpu_layers=0 (CPU). "
+                        f"This model requires more system RAM or a GPU with more VRAM.\n\n"
+                        f"Try a smaller model (e.g., 3B or 1.5B parameters)."
+                    ) from _ctx_e
+
+                except OSError as _os_e:
+                    # ── OSError (access violation) — CUDA context corrupted ──
+                    # An OSError access violation (0xc0000005) has corrupted the
+                    # CUDA driver context.  Any subsequent _Llama() call (even
+                    # CPU-only) will trigger a WINDOWS FATAL EXCEPTION that Python
+                    # cannot catch — killing the ComfyUI process entirely.
+                    #
+                    # We must NOT retry.  Raise immediately with a clear message.
+                    _os_err_str = str(_os_e)
+                    if "0xc000001d" in _os_err_str or "-1073741795" in _os_err_str:
+                        raise  # Let outer OSError handler format the CPU instruction message
+
+                    logging.error(
+                        f"[LLM Chat GGUF] CUDA access violation during model load:\n"
+                        f"  Model: {self.model_path}\n"
+                        f"  n_gpu_layers={layers_to_try}, n_ctx={ctx_to_try}\n"
+                        f"  Error: {_os_e}\n\n"
+                        f"  ⚠ The CUDA driver context may be corrupted.  Retrying "
+                        f"would crash the ComfyUI process.\n"
+                        f"  💡 Set n_gpu_layers to a lower value (e.g., 20) or 0 "
+                        f"(CPU-only) in the LLM Chat node settings.\n"
+                        f"  💡 Or use a smaller quantized model (Q4_K_M instead of Q8_0)."
+                    )
+                    raise RuntimeError(
+                        f"CUDA access violation loading LLM model. "
+                        f"The GPU driver is in an inconsistent state.\n\n"
+                        f"To fix this:\n"
+                        f"  1. Set n_gpu_layers to 0 (CPU-only) in the LLM Chat node\n"
+                        f"  2. Or restart ComfyUI and use a lower n_gpu_layers value "
+                        f"(e.g., 20 instead of -1)\n"
+                        f"  3. Or use a smaller quantized model (Q4_K_M)"
+                    ) from _os_e
+
+            # ── Log effective settings if fallback was used ──
+            if fallback_occurred:
+                logging.warning(
+                    f"[LLM Chat GGUF] Model loaded with adjusted settings:\n"
+                    f"  Requested: n_gpu_layers={self.n_gpu_layers}, n_ctx={self.n_ctx}\n"
+                    f"  Effective: n_gpu_layers={layers_to_try}, n_ctx={ctx_to_try}\n"
+                    f"  Reason: VRAM constraints detected (likely Vulkan backend + low VRAM)"
+                )
+
         except jinja2.exceptions.TemplateError as _tmpl_e:
             # ── Chat template contains unsupported Jinja2 tags (e.g., {% generation %}) ──
             # Some model variants (e.g., Dolphin) embed custom Jinja2 tags like
@@ -397,9 +643,6 @@ class LlamaCppModel:
                 try:
                     _original_init(self_, template, *args, **kwargs)
                 except jinja2.exceptions.TemplateSyntaxError:
-                    # Fall back to a minimal safe template that always parses.
-                    # The text-only path bypasses the model's built-in template
-                    # entirely (uses format_prompt_by_template() + generate()).
                     _original_init(
                         self_, "{{ message['content'] }}", *args, **kwargs
                     )
@@ -408,18 +651,19 @@ class LlamaCppModel:
                 self._model = _Llama(
                     model_path=self.model_path,
                     chat_handler=chat_handler,
-                    n_gpu_layers=self.n_gpu_layers,
+                    n_gpu_layers=layers_to_try,
                     use_mlock=self.use_mlock,
-                    n_ctx=self.n_ctx,
+                    n_ctx=ctx_to_try,
                     verbose=self.verbose,
                     n_batch=1024,
                     n_ubatch=512,
+                    flash_attn=self.flash_attn,
+                    offload_kqv=True,
                 )
                 self._template_suppressed = True
                 logging.info(
                     f"[LLM Chat GGUF] Model loaded successfully with suppressed "
-                    f"chat template. Text-only mode will use "
-                    f"format_prompt_by_template()."
+                    f"chat template."
                 )
             except Exception as _retry_e:
                 raise RuntimeError(
@@ -427,21 +671,11 @@ class LlamaCppModel:
                     f"{_retry_e}"
                 ) from _tmpl_e
             finally:
-                # ⚠️ CRITICAL: Always restore the original __init__, even if
-                # _Llama() raised a different exception. Otherwise ALL future
-                # model loads in this process would use the patched version,
-                # potentially masking real template issues on other models.
                 _lcf.Jinja2ChatFormatter.__init__ = _original_init
+
         except OSError as _llama_e:
             _llama_err_str = str(_llama_e)
             if "0xc000001d" in _llama_err_str or "-1073741795" in _llama_err_str:
-                # ── STATUS_ILLEGAL_INSTRUCTION: CPU doesn't support instruction set ──
-                # This happens when the pre-built wheel was compiled with CPU instructions
-                # (e.g., AVX-VNNI, AVX512-BF16) that the processor doesn't support.
-                # The install.py handles this at install time by detecting old CPUs and
-                # selecting the safe baseline. If we get here at runtime, it means either
-                # --try-latest was used or the detection didn't catch this CPU.
-                # Solution: re-run install.py with --backend cpu to get a CPU-only wheel.
                 logging.error(
                     f"[LLM Chat GGUF] CPU instruction set incompatibility (0xc000001d) "
                     f"detected. The installed wheel requires CPU instructions not "
@@ -500,6 +734,14 @@ class LlamaCppModel:
                 f"[LLM Chat GGUF] Model metadata keys: {list(self._metadata.keys())}"
             )
 
+        # ── Update finalizer with actual model/chat_handler references ──
+        # After load(), the _model and _chat_handler attributes hold real
+        # C-level objects that must be freed during cleanup. Recreate the
+        # finalizer so it captures these references for GC-time cleanup.
+        self._finalizer = weakref.finalize(
+            self, _llama_model_finalizer, self._model, self._chat_handler
+        )
+
         profiler.end("model_load_total")
 
     @property
@@ -544,11 +786,6 @@ class LlamaCppModel:
         """
         if self._model is None:
             raise RuntimeError("Model not loaded. Call load() before generate().")
-
-        # Auto-randomize seed when set to 0 (mirrors utils.auto_seed())
-        if seed == 0:
-            import random
-            seed = random.randint(1, 0xFFFFFFFF)
 
         # ── DIAGNOSTIC: Measure total __call__ latency ──
         t1 = time.perf_counter()
@@ -595,11 +832,6 @@ class LlamaCppModel:
         """
         if self._model is None:
             raise RuntimeError("Model not loaded. Call load() before generate_stream().")
-
-        # Auto-randomize seed when set to 0
-        if seed == 0:
-            import random
-            seed = random.randint(1, 0xFFFFFFFF)
 
         # ── DIAGNOSTIC: Measure __call__ setup vs inference latency ──
         # T0 (start_time) set by caller (streaming.py). T1 = before __call__.
@@ -649,6 +881,7 @@ class LlamaCppModel:
         seed: int = 42,
         repetition_penalty: float = 1.0,
         stop: list[str] | None = None,
+        response_format: dict | None = None,
     ) -> str:
         """Generate a chat response using create_chat_completion() (multimodal API).
 
@@ -718,11 +951,6 @@ class LlamaCppModel:
             f"chat_template_preview={repr(_chat_template[:150])}"
         )
 
-        # Auto-randomize seed when set to 0 (mirrors generate() behavior)
-        if seed == 0:
-            import random
-            seed = random.randint(1, 0xFFFFFFFF)
-
         # ── DIAGNOSTIC: Measure create_chat_completion total latency ──
         t1 = time.perf_counter()
 
@@ -740,6 +968,7 @@ class LlamaCppModel:
                 seed=seed,
                 repeat_penalty=repetition_penalty,
                 stop=stop or [],
+                response_format=response_format,
             )
             t2 = time.perf_counter()
             total_time = (t2 - t1) * 1000
@@ -783,6 +1012,7 @@ class LlamaCppModel:
                         seed=seed,
                         repeat_penalty=repetition_penalty,
                         stop=stop or [],
+                        response_format=response_format,
                     )
                     t2b = time.perf_counter()
                     total_time_b = (t2b - t1b) * 1000
@@ -810,6 +1040,7 @@ class LlamaCppModel:
         seed: int = 42,
         repetition_penalty: float = 1.0,
         stop: list[str] | None = None,
+        response_format: dict | None = None,
     ):
         """Generate a chat response with token-by-token streaming (multimodal API).
 
@@ -859,11 +1090,6 @@ class LlamaCppModel:
             f"chat_template_preview={repr(_chat_template[:150])}"
         )
 
-        # Auto-randomize seed when set to 0 (mirrors generate_stream() behavior)
-        if seed == 0:
-            import random
-            seed = random.randint(1, 0xFFFFFFFF)
-
         # ── DIAGNOSTIC: Measure create_chat_completion setup vs inference ──
         t1 = time.perf_counter()
 
@@ -880,6 +1106,7 @@ class LlamaCppModel:
                 seed=seed,
                 repeat_penalty=repetition_penalty,
                 stop=stop or [],
+                response_format=response_format,
                 stream=True,
             )
             t2 = time.perf_counter()
@@ -924,6 +1151,7 @@ class LlamaCppModel:
                         seed=seed,
                         repeat_penalty=repetition_penalty,
                         stop=stop or [],
+                        response_format=response_format,
                         stream=True,
                     )
                     t2b = time.perf_counter()
@@ -989,6 +1217,16 @@ class LlamaCppModel:
         # close it explicitly. Otherwise the multimodal projection model remains in
         # GPU memory after the main model unloads, leaking VRAM.
         if self._chat_handler is not None:
+            # ── Capture VRAM state before chat handler cleanup ──
+            # Used to verify the multimodal projection model was actually freed.
+            _vram_before = None
+            try:
+                import torch as _torch0
+                if _torch0.cuda.is_available():
+                    _vram_before = _torch0.cuda.memory_allocated()
+            except Exception:
+                pass
+
             try:
                 if hasattr(self._chat_handler, '_exit_stack'):
                     self._chat_handler._exit_stack.close()
@@ -996,6 +1234,33 @@ class LlamaCppModel:
                 logging.warning(
                     f"[LLM Chat GGUF] Error closing chat handler ExitStack: {e}"
                 )
+
+            # ── Verify VRAM decreased after chat handler cleanup ──
+            # If the _exit_stack.close() failed silently (e.g., C-level
+            # mtmd_free callback didn't actually free memory), the mtmd_ctx
+            # remains in VRAM — a leak. Alert the user immediately.
+            if _vram_before is not None:
+                try:
+                    import torch as _torch1
+                    if _torch1.cuda.is_available():
+                        _vram_after = _torch1.cuda.memory_allocated()
+                        _freed_mb = (_vram_before - _vram_after) / (1024**2)
+                        if _freed_mb < 1.0:
+                            logging.warning(
+                                f"[LLM Chat GGUF] Chat handler cleanup freed "
+                                f"only {_freed_mb:.1f} MiB — mtmd_ctx may not "
+                                f"have been fully released. VRAM: "
+                                f"{_vram_before/(1024**3):.2f} → "
+                                f"{_vram_after/(1024**3):.2f} GiB"
+                            )
+                        else:
+                            logging.debug(
+                                f"[LLM Chat GGUF] Chat handler freed "
+                                f"{_freed_mb:.1f} MiB VRAM"
+                            )
+                except Exception:
+                    pass
+
             self._chat_handler = None
 
         # ── 2. Close main model (frees model weights, KV cache, context) ──
@@ -1017,11 +1282,33 @@ class LlamaCppModel:
                 # VRAM in use even though llama.cpp freed everything.
                 torch.cuda.empty_cache()
 
-            logging.info(
-                "[LLM Chat GGUF] Model unloaded from GPU — "
-                "VRAM freed for image generation"
-            )
+            # ── VRAM state verification after unload ──
+            # Diagnostic: log VRAM state to confirm memory was actually freed.
+            # If VRAM didn't decrease as expected, the C-level close() may
+            # have failed silently — alert the user immediately.
+            try:
+                import torch as _torch2
+                if _torch2.cuda.is_available():
+                    _after_alloc = _torch2.cuda.memory_allocated() / (1024**3)
+                    _after_reserved = _torch2.cuda.memory_reserved() / (1024**3)
+                    logging.info(
+                        f"[LLM Chat GGUF] VRAM after unload: "
+                        f"{_after_alloc:.2f} GiB allocated, "
+                        f"{_after_reserved:.2f} GiB reserved"
+                    )
+            except Exception:
+                pass
 
-    def __del__(self):
-        """Ensure model is unloaded on garbage collection."""
-        self.unload()
+        # ── Reset finalizer to no-op after explicit unload ──
+        # Prevents double-cleanup when the object is later garbage collected.
+        self._finalizer = weakref.finalize(
+            self, lambda m, ch: None, None, None
+        )
+
+    # ── __del__ REMOVED ──
+    # Replaced by weakref.finalize() in __init__ (see _llama_model_finalizer).
+    # __del__ is unreliable during interpreter shutdown because:
+    #   - Module globals (logging, torch) may be None
+    #   - CUDA runtime DLL may already be unloaded
+    #   - Calling CUDA APIs after driver teardown = undefined behavior / crash
+    # weakref.finalize() avoids all these issues by using an atexit fallback.

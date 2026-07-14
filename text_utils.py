@@ -15,8 +15,11 @@ Nodes:
     7. LLM_TextDuplicateRemover — 🗃️ EasyLLM Text Duplicate Remover (deduplicate tags/words/lines)
 """
 
+import json
 import logging
 import re
+
+from . import prompt_manager
 
 # ──────────────────────────────────────────────────────────────────────
 # Node 1: LLM_TextInput — 📝 EasyLLM Text Input
@@ -39,13 +42,33 @@ class LLM_TextInput:
 
     @classmethod
     def INPUT_TYPES(cls):
+        # Build prompt list: "Custom" + all prompt names from library
+        names = ["Custom"]
+        try:
+            struct = prompt_manager.load_all_prompts()
+            seen = set()
+            for p in struct.get("prompts", []):
+                n = p.get("name", "").strip()
+                if n and n not in seen:
+                    names.append(n)
+                    seen.add(n)
+        except Exception:
+            pass
+
         return {
             "required": {
+                "prompt_selector": (names, {
+                    "default": "Custom",
+                    "tooltip": (
+                        "'Custom' = use the text field below. "
+                        "Select a named prompt to output that prompt instead."
+                    ),
+                }),
                 "text": ("STRING", {
                     "multiline": True,
                     "dynamicPrompts": False,
                     "default": "",
-                    "tooltip": "Type or paste your text here.",
+                    "tooltip": "Type or paste your text here. Disabled when a named prompt is selected.",
                 }),
             },
         }
@@ -54,11 +77,30 @@ class LLM_TextInput:
     RETURN_NAMES = ("text",)
     OUTPUT_TOOLTIPS = ("The typed text, passed through as-is.",)
     FUNCTION = "passthrough"
-    CATEGORY = "EasyLLM/text"
+    CATEGORY = "EasyLLM"
     DESCRIPTION = "A simple multi-line text input. Wire the output to any STRING input."
 
-    def passthrough(self, text=""):
-        """Return the input text unchanged."""
+    def passthrough(self, text="", prompt_selector="Custom"):
+        """
+        Return the input text, or resolve a named prompt from the library.
+
+        Args:
+            text: The typed text (used when prompt_selector is "Custom").
+            prompt_selector: "Custom" or a named prompt from the library.
+
+        Returns:
+            tuple: (resolved_text,)
+        """
+        if prompt_selector != "Custom" and prompt_selector.strip():
+            try:
+                resolved = prompt_manager.get_prompt_by_name(prompt_selector)
+                if resolved:
+                    return (resolved,)
+            except Exception as e:
+                logging.warning(
+                    f"[LLM_TextInput] Failed to resolve prompt "
+                    f"'{prompt_selector}': {e}"
+                )
         return (text,)
 
 
@@ -94,12 +136,14 @@ class LLM_TextJoiner:
                     "multiline": True,
                     "dynamicPrompts": False,
                     "default": "",
+                    "forceInput": True,
                     "tooltip": "First text input.",
                 }),
                 "string_b": ("STRING", {
                     "multiline": True,
                     "dynamicPrompts": False,
                     "default": "",
+                    "forceInput": True,
                     "tooltip": "Second text input.",
                 }),
                 "delimiter": ([", ", " ", "\\n", " - "], {
@@ -113,7 +157,7 @@ class LLM_TextJoiner:
     RETURN_NAMES = ("text",)
     OUTPUT_TOOLTIPS = ("The joined text.",)
     FUNCTION = "join"
-    CATEGORY = "EasyLLM/text"
+    CATEGORY = "EasyLLM/🔧 Tools"
     DESCRIPTION = (
         "Merge two strings with a clean delimiter. "
         "Handles empty inputs gracefully — no dangling delimiters."
@@ -168,6 +212,7 @@ class LLM_TextReplacer:
                     "multiline": True,
                     "dynamicPrompts": False,
                     "default": "",
+                    "forceInput": True,
                     "tooltip": "Input text to process. Connect to 'text' or 'raw_text' from EasyLLM / EasyLLMGGUF.",
                 }),
                 "find_text": ("STRING", {
@@ -193,7 +238,7 @@ class LLM_TextReplacer:
     RETURN_NAMES = ("text",)
     OUTPUT_TOOLTIPS = ("The transformed text after find-and-replace.",)
     FUNCTION = "replace"
-    CATEGORY = "EasyLLM/text"
+    CATEGORY = "EasyLLM/🔧 Tools"
     DESCRIPTION = (
         "General-purpose find-and-replace. Works on any text stream "
         "(text or raw_text). Case-sensitive toggle. "
@@ -260,6 +305,7 @@ class LLM_TextWhitespaceCleaner:
                     "multiline": True,
                     "dynamicPrompts": False,
                     "default": "",
+                    "forceInput": True,
                     "tooltip": "Input text to clean.",
                 }),
                 "trim_mode": ([
@@ -292,7 +338,7 @@ class LLM_TextWhitespaceCleaner:
     RETURN_NAMES = ("text",)
     OUTPUT_TOOLTIPS = ("The cleaned text.",)
     FUNCTION = "clean"
-    CATEGORY = "EasyLLM/text"
+    CATEGORY = "EasyLLM/🔧 Tools"
     DESCRIPTION = (
         "Strip unwanted whitespace from text. "
         "Supports leading/trailing/both trimming and removal of blank lines."
@@ -374,6 +420,7 @@ class LLM_TextExtractor:
                     "multiline": True,
                     "dynamicPrompts": False,
                     "default": "",
+                    "forceInput": True,
                     "tooltip": "Input text to extract from.",
                 }),
                 "delimiter": ("STRING", {
@@ -408,7 +455,7 @@ class LLM_TextExtractor:
     RETURN_NAMES = ("text",)
     OUTPUT_TOOLTIPS = ("The extracted text, or original if delimiter not found.",)
     FUNCTION = "extract"
-    CATEGORY = "EasyLLM/text"
+    CATEGORY = "EasyLLM/🔧 Tools"
     DESCRIPTION = (
         "Keep text before or after a delimiter word/phrase. "
         "Supports occurrence selection (first, Nth, last) and case-insensitive matching. "
@@ -501,6 +548,7 @@ class LLM_TextLimiter:
                     "multiline": True,
                     "dynamicPrompts": False,
                     "default": "",
+                    "forceInput": True,
                     "tooltip": "Input text to truncate.",
                 }),
                 "mode": (["characters", "words", "lines"], {
@@ -529,7 +577,7 @@ class LLM_TextLimiter:
     RETURN_NAMES = ("text",)
     OUTPUT_TOOLTIPS = ("The truncated text.",)
     FUNCTION = "limit"
-    CATEGORY = "EasyLLM/text"
+    CATEGORY = "EasyLLM/🔧 Tools"
     DESCRIPTION = (
         "Truncate text to a maximum number of characters, words, or lines. "
         "Choose which side to cut from and optionally add ellipsis."
@@ -614,6 +662,7 @@ class LLM_TextDuplicateRemover:
                     "multiline": True,
                     "dynamicPrompts": False,
                     "default": "",
+                    "forceInput": True,
                     "tooltip": "Input text containing potential duplicates.",
                 }),
                 "mode": (["comma_separated", "words", "lines"], {
@@ -645,7 +694,7 @@ class LLM_TextDuplicateRemover:
     RETURN_NAMES = ("text",)
     OUTPUT_TOOLTIPS = ("Deduplicated text with first-occurrence order preserved.",)
     FUNCTION = "deduplicate"
-    CATEGORY = "EasyLLM/text"
+    CATEGORY = "EasyLLM/🔧 Tools"
     DESCRIPTION = (
         "Remove duplicate tags, words, or lines. First occurrence wins. "
         "Case-insensitive by default — ideal for Danbooru tag cleanup."
@@ -694,6 +743,342 @@ class LLM_TextDuplicateRemover:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Node 8: LLM_TextAutoClean — 🧼 EasyLLM Auto Clean (no settings)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class LLM_TextAutoClean:
+    """
+    🧼 EasyLLM Auto Clean (no settings) — Zero-config text cleaner for LLM output.
+
+    Applies a cascading pipeline of regex passes to strip model artifacts,
+    JSON blocks, stray punctuation, and (optionally) markdown syntax and
+    conversational prefixes from generated text.
+
+    Pipeline (least → most destructive):
+      1. Model Artifacts       — <think>, Thinking..., <channel>, USER:/ASSISTANT:, garbled Unicode
+      2. JSON Extraction       — find {…} blocks, extract string values via json.loads()
+      3. Markdown Strip        — headers, bold/italic, lists, code fences, rules (aggressive only)
+      4. Conversational Prefix — "Here is:", "Sure!", "Certainly:" etc. (aggressive only)
+      5. Stray Punctuation     — leading/trailing unmatched quotes and brackets
+      6. Whitespace Normalize  — collapse 3+ blank lines, strip edges
+
+    Inputs:
+        text       (STRING): Input text to clean.
+        aggressive (BOOLEAN): When True, also strips markdown syntax and
+                              conversational prefixes. Default: False.
+
+    Outputs:
+        STRING: Cleaned text.
+    """
+
+    # ── Conversational prefix patterns (Pass 4) ──
+    _PREFIX_PATTERNS = [
+        re.compile(r'^(Here(?: is|\'s| are).*?:)\s*'),
+        re.compile(r'^(Sure(?:, I can help with that)?[.!:]\s*)'),
+        re.compile(r'^(Certainly[!.:]?\s*)'),
+        re.compile(r'^(Of course[!.:]?\s*)'),
+        re.compile(r'^(I hope this helps[!.:]?\s*)'),
+        re.compile(r'^(Hope this helps[!.:]?\s*)'),
+        re.compile(r'^(The (?:generated|resulting|final|output) (?:prompt|text|tags)(?: would be| is|:)\s*)'),
+        re.compile(r'^(As (?:an AI|a language model)[,.]?\s*)'),
+    ]
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "text": ("STRING", {
+                    "multiline": True,
+                    "dynamicPrompts": False,
+                    "default": "",
+                    "forceInput": True,
+                    "tooltip": "Input text to clean — typically LLM output.",
+                }),
+                "aggressive": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": (
+                        "When OFF (default): safe passes only (model artifacts, "
+                        "JSON extraction, stray punctuation, whitespace). "
+                        "When ON: also strips markdown syntax and conversational prefixes."
+                    ),
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("text",)
+    OUTPUT_TOOLTIPS = ("Cleaned text with artifacts removed.",)
+    FUNCTION = "clean"
+    CATEGORY = "EasyLLM/🔧 Tools"
+    DESCRIPTION = (
+        "Zero-config text cleaner. Removes model artifacts, JSON blocks, "
+        "stray punctuation. Aggressive mode also strips markdown and "
+        "conversational prefixes. Logs what it removes."
+    )
+
+    # ──────────────────────────────────────────────────────────────
+    # Pass 1: Model Artifacts (zero risk, always runs)
+    # ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _pass_model_artifacts(text: str) -> str:
+        """Strip model-internal artifacts — think tags, channel tags, garbled Unicode, etc."""
+        if not text:
+            return text
+
+        from .utils import (
+            THINK_TAG_PATTERN,
+            DEEPSEEK_THINK_PATTERN,
+            GEMMA_CHANNEL_PATTERN,
+            _CHAT_TEMPLATE_LEAK_PATTERN,
+            GARBLED_UNICODE_PATTERN,
+        )
+
+        original = text
+        text = THINK_TAG_PATTERN.sub("", text)
+        text = DEEPSEEK_THINK_PATTERN.sub("", text)
+        text = GEMMA_CHANNEL_PATTERN.sub("", text)
+        text = _CHAT_TEMPLATE_LEAK_PATTERN.sub("\n", text)
+        text = GARBLED_UNICODE_PATTERN.sub("", text)
+
+        if text != original:
+            logging.info(
+                "[LLM_TextAutoClean] Pass 1 (model_artifacts): "
+                "removed artifacts — output length %d (was %d)",
+                len(text), len(original)
+            )
+        return text
+
+    # ──────────────────────────────────────────────────────────────
+    # Pass 2: JSON Block Extraction (low risk, always runs)
+    # ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _collect_strings(data) -> list:
+        """Recursively collect all string values from a parsed JSON structure."""
+        strings = []
+        if isinstance(data, str):
+            strings.append(data)
+        elif isinstance(data, dict):
+            for v in data.values():
+                strings.extend(LLM_TextAutoClean._collect_strings(v))
+        elif isinstance(data, (list, tuple)):
+            for item in data:
+                strings.extend(LLM_TextAutoClean._collect_strings(item))
+        return strings
+
+    @staticmethod
+    def _pass_json_extraction(text: str) -> str:
+        """Find JSON {…} blocks, extract string values, replace block with prose."""
+        if not text:
+            return text
+
+        def _try_extract(match):
+            block = match.group(0)
+            try:
+                data = json.loads(block)
+                values = LLM_TextAutoClean._collect_strings(data)
+                if values:
+                    replacement = ", ".join(values)
+                    logging.info(
+                        "[LLM_TextAutoClean] Pass 2 (json_extraction): "
+                        "extracted %d values from JSON block",
+                        len(values)
+                    )
+                    return replacement
+                return block
+            except json.JSONDecodeError:
+                return block  # not valid JSON — leave unchanged
+
+        result = re.sub(r'\{[^{}]*\}', _try_extract, text)
+        return result
+
+    # ──────────────────────────────────────────────────────────────
+    # Pass 3: Markdown Strip (medium risk, aggressive only)
+    # ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _pass_markdown_strip(text: str) -> str:
+        """Strip markdown formatting syntax while preserving semantic content."""
+        if not text:
+            return text
+
+        original = text
+
+        # Headers: ### Title → Title
+        text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+
+        # Bold/italic: **text** or *text* → text
+        text = re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', text)
+
+        # Bullet lists: "- cat\n- dog\n- bird" → "cat, dog, bird"
+        # First pass: collect bullet lines and convert to comma-separated
+        def _replace_bullet(m):
+            items = [m.group(1).strip()]
+            return items[0]
+        # Replace individual bullet items, mark them temporarily
+        text = re.sub(r'^[\s]*[-*+]\s+(.+)', r'\1', text, flags=re.MULTILINE)
+
+        # Numbered lists: "1. cat" → "cat"
+        text = re.sub(r'^\s*\d+[.)]\s+', '', text, flags=re.MULTILINE)
+
+        # Code fences (block): ```…``` → (empty)
+        text = re.sub(r'```[\s\S]*?```', '', text)
+
+        # Inline code: `text` → text
+        text = re.sub(r'`([^`]+)`', r'\1', text)
+
+        # Horizontal rules: --- or *** or ___
+        text = re.sub(r'^[-*_]{3,}\s*$', '', text, flags=re.MULTILINE)
+
+        if text != original:
+            logging.info(
+                "[LLM_TextAutoClean] Pass 3 (markdown_strip): "
+                "stripped markdown syntax — output length %d (was %d)",
+                len(text), len(original)
+            )
+        return text
+
+    # ──────────────────────────────────────────────────────────────
+    # Pass 4: Conversational Prefix (medium-high risk, aggressive only)
+    # ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _pass_conversational_prefix(text: str) -> str:
+        """Strip common conversational prefixes from the start of text."""
+        if not text:
+            return text
+
+        original = text
+        changed = False
+        for pattern in LLM_TextAutoClean._PREFIX_PATTERNS:
+            match = pattern.match(text)
+            if match:
+                prefix = match.group(0)
+                text = text[len(prefix):]
+                changed = True
+                logging.info(
+                    "[LLM_TextAutoClean] Pass 4 (conversational_prefix): "
+                    "removed prefix %r",
+                    prefix[:60]
+                )
+
+        # Also strip common suffixes at the end
+        _suffix_patterns = [
+            re.compile(r'\s*(I hope this helps[.!]?)$', re.IGNORECASE),
+            re.compile(r'\s*(Hope this helps[.!]?)$', re.IGNORECASE),
+            re.compile(r'\s*(Let me know if you need anything else[.!]?)$', re.IGNORECASE),
+            re.compile(r'\s*(Feel free to ask if you have questions[.!]?)$', re.IGNORECASE),
+        ]
+        for pattern in _suffix_patterns:
+            match = pattern.search(text)
+            if match:
+                suffix = match.group(0)
+                text = text[:match.start()]
+                changed = True
+                logging.info(
+                    "[LLM_TextAutoClean] Pass 4 (conversational_suffix): "
+                    "removed suffix %r",
+                    suffix[:60]
+                )
+
+        if changed:
+            return text
+        return original
+
+    # ──────────────────────────────────────────────────────────────
+    # Pass 5: Stray Quotes & Brackets (low-medium risk, always runs)
+    # ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _pass_stray_punctuation(text: str) -> str:
+        """Remove leading/trailing stray quotes, brackets that aren't paired."""
+        if not text:
+            return text
+
+        original = text
+
+        # Leading/trailing stray quotes
+        text = re.sub(r'^[\'"`]+', '', text)
+        text = re.sub(r'[\'"`]+$', '', text)
+
+        # Leading unmatched opening brackets
+        text = re.sub(r'^[\[({]+(?![^\]})]*[\]})])', '', text)
+
+        # Trailing unmatched closing brackets
+        text = re.sub(r'(?<![\[({])[\]})]+$', '', text)
+
+        if text != original:
+            logging.info(
+                "[LLM_TextAutoClean] Pass 5 (stray_punctuation): "
+                "removed stray punctuation — output length %d (was %d)",
+                len(text), len(original)
+            )
+        return text
+
+    # ──────────────────────────────────────────────────────────────
+    # Pass 6: Whitespace Normalize (zero risk, always runs)
+    # ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _pass_whitespace_normalize(text: str) -> str:
+        """Collapse runs of blank lines and strip leading/trailing whitespace."""
+        if not text:
+            return text
+
+        original = text
+
+        # 3+ consecutive blank lines → 1 blank line
+        text = re.sub(r'\n{3,}', '\n\n', text)
+
+        # Strip leading/trailing whitespace
+        text = text.strip()
+
+        if text != original:
+            logging.info(
+                "[LLM_TextAutoClean] Pass 6 (whitespace_normalize): "
+                "normalized whitespace — output length %d (was %d)",
+                len(text), len(original)
+            )
+        return text
+
+    # ──────────────────────────────────────────────────────────────
+    # Pipeline Orchestrator
+    # ──────────────────────────────────────────────────────────────
+    def clean(self, text="", aggressive=False):
+        """
+        Run the cascading pipeline on the input text.
+
+        Args:
+            text: Input text to clean.
+            aggressive: When True, also runs markdown strip and
+                        conversational prefix removal.
+
+        Returns:
+            tuple: (cleaned_text,)
+        """
+        if not text:
+            return ("",)
+
+        # Pass 1: Model Artifacts (always)
+        text = self._pass_model_artifacts(text)
+
+        # Pass 2: JSON Extraction (always)
+        text = self._pass_json_extraction(text)
+
+        # Pass 3: Markdown Strip (aggressive only)
+        if aggressive:
+            text = self._pass_markdown_strip(text)
+
+        # Pass 4: Conversational Prefix (aggressive only)
+        if aggressive:
+            text = self._pass_conversational_prefix(text)
+
+        # Pass 5: Stray Quotes & Brackets (always)
+        text = self._pass_stray_punctuation(text)
+
+        # Pass 6: Whitespace Normalize (always)
+        text = self._pass_whitespace_normalize(text)
+
+        return (text,)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Node Registration
 # ──────────────────────────────────────────────────────────────────────
 
@@ -705,6 +1090,7 @@ NODE_CLASS_MAPPINGS = {
     "LLM_TextLimiter": LLM_TextLimiter,
     "LLM_TextWhitespaceCleaner": LLM_TextWhitespaceCleaner,
     "LLM_TextDuplicateRemover": LLM_TextDuplicateRemover,
+    "LLM_TextAutoClean": LLM_TextAutoClean,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -715,4 +1101,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LLM_TextLimiter": "📏 EasyLLM Text Limiter",
     "LLM_TextWhitespaceCleaner": "🧽 EasyLLM Whitespace Cleaner",
     "LLM_TextDuplicateRemover": "🗃️ EasyLLM Text Duplicate Remover",
+    "LLM_TextAutoClean": "🧼 EasyLLM Auto Clean (no settings)",
 }

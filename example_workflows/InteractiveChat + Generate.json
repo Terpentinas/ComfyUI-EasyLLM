@@ -1,0 +1,756 @@
+{
+  "id": "a5f3eb53-cce5-4be6-887d-92104910ad03",
+  "revision": 0,
+  "last_node_id": 164,
+  "last_link_id": 271,
+  "nodes": [
+    {
+      "id": 126,
+      "type": "UNETLoader",
+      "pos": [
+        197.10109698846648,
+        169.28706245725718
+      ],
+      "size": [
+        370,
+        110
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            258
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.8.2",
+        "Node name for S&R": "UNETLoader",
+        "models": [
+          {
+            "name": "flux-2-klein-4b-fp8.safetensors",
+            "url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-4b-fp8/resolve/main/flux-2-klein-4b-fp8.safetensors",
+            "directory": "diffusion_models"
+          }
+        ],
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.7",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "flux-2-klein-4b.safetensors",
+        "default"
+      ]
+    },
+    {
+      "id": 128,
+      "type": "VAELoader",
+      "pos": [
+        197.10109698846648,
+        337.28706245725675
+      ],
+      "size": [
+        370,
+        110
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            265
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.8.2",
+        "Node name for S&R": "VAELoader",
+        "models": [
+          {
+            "name": "flux2-vae.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors",
+            "directory": "vae"
+          }
+        ],
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.7",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "flux2-vae.safetensors"
+      ]
+    },
+    {
+      "id": 127,
+      "type": "CLIPLoader",
+      "pos": [
+        197.10109698846648,
+        505.2870624572562
+      ],
+      "size": [
+        370,
+        150
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            266,
+            267
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.8.2",
+        "Node name for S&R": "CLIPLoader",
+        "models": [
+          {
+            "name": "qwen_3_4b.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors",
+            "directory": "text_encoders"
+          }
+        ],
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.7",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "qwen_3_4b.safetensors",
+        "flux2",
+        "default"
+      ]
+    },
+    {
+      "id": 163,
+      "type": "EasyLLM_ImageCapture",
+      "pos": [
+        1671.2986649093907,
+        127.54527695848475
+      ],
+      "size": [
+        284.3833374023437,
+        170.0000000000001
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 264
+        },
+        {
+          "name": "session_uuid",
+          "shape": 7,
+          "type": "STRING",
+          "link": 268
+        },
+        {
+          "name": "positive_prompt",
+          "shape": 7,
+          "type": "STRING",
+          "link": 269
+        }
+      ],
+      "outputs": [
+        {
+          "name": "success",
+          "type": "BOOLEAN",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "EasyLLM_ImageCapture"
+      },
+      "widgets_values": [
+        "generate",
+        ""
+      ]
+    },
+    {
+      "id": 160,
+      "type": "CLIPTextEncode",
+      "pos": [
+        747.3468684231237,
+        147.58669318549002
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 266
+        },
+        {
+          "name": "text",
+          "type": "STRING",
+          "widget": {
+            "name": "text"
+          },
+          "link": 260
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            261
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.27.0",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 159,
+      "type": "KSampler",
+      "pos": [
+        1197.2462911960154,
+        153.5251917037398
+      ],
+      "size": [
+        270,
+        474
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 258
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 261
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 262
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 270
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            263
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.27.0",
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        0,
+        "randomize",
+        4,
+        1,
+        "euler",
+        "simple",
+        1
+      ]
+    },
+    {
+      "id": 161,
+      "type": "CLIPTextEncode",
+      "pos": [
+        752.5565148561521,
+        404.51240583645733
+      ],
+      "size": [
+        389.98723788120105,
+        88
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 267
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            262
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.27.0",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 164,
+      "type": "EmptyLatentImage",
+      "pos": [
+        862.9485728794166,
+        551.5585377853807
+      ],
+      "size": [
+        270,
+        106
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            270
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.27.0",
+        "Node name for S&R": "EmptyLatentImage"
+      },
+      "widgets_values": [
+        1024,
+        1024,
+        1
+      ]
+    },
+    {
+      "id": 162,
+      "type": "VAEDecode",
+      "pos": [
+        1507.6734153320735,
+        155.52565929783367
+      ],
+      "size": [
+        140,
+        46
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 263
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 265
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            264
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.27.0",
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 157,
+      "type": "EasyLLMGGUF",
+      "pos": [
+        -602.2104030240104,
+        326.6817880887922
+      ],
+      "size": [
+        400,
+        298
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text_input",
+          "shape": 7,
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "system_prompt",
+          "shape": 7,
+          "type": "STRING",
+          "link": null
+        },
+        {
+          "name": "image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "raw_text",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "trigger_prompt",
+          "type": "STRING",
+          "links": [
+            255
+          ]
+        },
+        {
+          "name": "image_output",
+          "type": "IMAGE",
+          "links": []
+        }
+      ],
+      "title": "🤖 EasyLLM GGUF · Chat",
+      "properties": {
+        "Node name for S&R": "EasyLLMGGUF"
+      },
+      "widgets_values": [
+        "D:\\lmstudio\\models\\lmstudio-community\\gemma-4-E4B-it-GGUF\\gemma-4-E4B-it-Q4_K_M.gguf",
+        "chat",
+        "",
+        0.7,
+        768,
+        42,
+        "randomize",
+        "You are a friendly creative assistant who can chat, generate images, and edit images.\n\nYour behavior:\n- Chat naturally like a helpful assistant.\n- If the user describes a scene or asks for an image, generate one.\n- If the user asks to change an image, edit it.\n- If their request is unclear, ask 1 clarifying question instead of guessing.\n\nFor images, end your reply with one JSON block:\n\nGenerate:\n{\"action\":\"generate_image\",\"prompt\":\"clear description of the final image\"}\n\nEdit:\n{\"action\":\"edit_image\",\"prompt\":\"clear description of the final edited image\"}\n\nDo NOT include JSON for normal conversation.\n\nImage prompts:\nDescribe what the final image looks like—subjects, setting, lighting, mood, style.\nFor edits, describe the final result while keeping everything the user didn't ask to change.\n\nIf the user refers to \"this image\", \"it\", or \"that one\", treat it as the image to edit—whether uploaded or previously generated.\n\nThat's it. Just be helpful.",
+        "auto",
+        4096,
+        true,
+        -1,
+        true,
+        true,
+        "unload",
+        50,
+        0.9,
+        1.1,
+        "D:\\lmstudio\\models\\lmstudio-community\\gemma-4-E4B-it-GGUF\\mmproj-gemma-4-E4B-it-BF16.gguf",
+        "",
+        ""
+      ],
+      "llmchat": {
+        "chatHistory": [],
+        "enhancerHistory": [],
+        "cachedText": "No problem at all! We can easily change the cat to a black one.\n\nSo, I will edit the previous image to show a **black kitten** playfully chasing the butterfly in the sunlit meadow setting.\n\nGenerate:\n{\"action\":\"edit_image\",\"prompt\":\"The cute illustration of the fluffy kitten playfully chasing a colorful butterfly in a sunlit meadow, but change the kitten's fur color to solid black while keeping all other elements (butterfly, meadow, style) exactly the same.\"}",
+        "popupSettings": {
+          "model_path": "D:\\lmstudio\\models\\lmstudio-community\\gemma-4-E4B-it-GGUF\\gemma-4-E4B-it-Q4_K_M.gguf",
+          "n_gpu_layers": -1,
+          "n_ctx": 4096,
+          "chat_template": "auto",
+          "use_mlock": true,
+          "top_k": 50,
+          "top_p": 0.9,
+          "max_length": 768,
+          "temperature": 0.7,
+          "seed": 42,
+          "vram_mode": "unload",
+          "mmproj_path": "D:\\lmstudio\\models\\lmstudio-community\\gemma-4-E4B-it-GGUF\\mmproj-gemma-4-E4B-it-BF16.gguf",
+          "repetition_penalty": 1.1
+        },
+        "uploadedImage": null
+      }
+    },
+    {
+      "id": 143,
+      "type": "LLM_TriggerRouter",
+      "pos": [
+        -162.10535537743067,
+        341.88546896545523
+      ],
+      "size": [
+        224.35000610351562,
+        66
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "trigger_prompt",
+          "type": "STRING",
+          "link": 255
+        }
+      ],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "links": [
+            260,
+            269
+          ]
+        },
+        {
+          "name": "negative_prompt",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "session_uuid",
+          "type": "STRING",
+          "links": [
+            268
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LLM_TriggerRouter"
+      },
+      "widgets_values": []
+    }
+  ],
+  "links": [
+    [
+      255,
+      157,
+      2,
+      143,
+      0,
+      "STRING"
+    ],
+    [
+      258,
+      126,
+      0,
+      159,
+      0,
+      "MODEL"
+    ],
+    [
+      260,
+      143,
+      0,
+      160,
+      1,
+      "STRING"
+    ],
+    [
+      261,
+      160,
+      0,
+      159,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      262,
+      161,
+      0,
+      159,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      263,
+      159,
+      0,
+      162,
+      0,
+      "LATENT"
+    ],
+    [
+      264,
+      162,
+      0,
+      163,
+      0,
+      "IMAGE"
+    ],
+    [
+      265,
+      128,
+      0,
+      162,
+      1,
+      "VAE"
+    ],
+    [
+      266,
+      127,
+      0,
+      160,
+      0,
+      "CLIP"
+    ],
+    [
+      267,
+      127,
+      0,
+      161,
+      0,
+      "CLIP"
+    ],
+    [
+      268,
+      143,
+      2,
+      163,
+      1,
+      "STRING"
+    ],
+    [
+      269,
+      143,
+      0,
+      163,
+      2,
+      "STRING"
+    ],
+    [
+      270,
+      164,
+      0,
+      159,
+      3,
+      "LATENT"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 34,
+      "title": "Models",
+      "bounding": [
+        173.10109698846642,
+        93.28706245725742,
+        418,
+        586
+      ],
+      "color": "#c47b30",
+      "flags": {}
+    },
+    {
+      "id": 42,
+      "title": "Generate",
+      "bounding": [
+        725.0749665838619,
+        70.40382595333546,
+        1252.6700928763216,
+        613.9894979890917
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 44,
+      "title": "EasyLLM",
+      "bounding": [
+        -632.3222343462631,
+        245.2694359615291,
+        728.4643336676897,
+        421.4351882510391
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "frontendVersion": "1.45.20",
+    "workflowRendererVersion": "LG",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true,
+    "ds": {
+      "scale": 0.7690185693659273,
+      "offset": [
+        1040.7203392359204,
+        312.24143300942666
+      ]
+    },
+    "ue_links": []
+  },
+  "version": 0.4
+}

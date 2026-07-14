@@ -150,6 +150,7 @@
     flex-direction: column;
     gap: 12px;
     min-height: 0;
+    position: relative;  /* anchor for absolute drop-zone overlay */
 }
 
 /* ── Chat History Container ──────────────────────────────────────────── */
@@ -314,6 +315,40 @@
     background: #9068e0;
 }
 
+/* ── Drag-and-Drop Image Upload Zone ────────────────────────────────── */
+
+.llm-popup-drop-zone {
+    display: none;
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--llm-accent-primary, #4fc3f7);
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    border: 2px dashed var(--llm-accent-primary, #4fc3f7);
+    border-radius: 8px;
+    pointer-events: none;
+    user-select: none;
+}
+
+.llm-popup-body-dragover .llm-popup-drop-zone {
+    display: flex;
+}
+
+/* Dim content underneath when dragging */
+.llm-popup-body-dragover .llm-popup-history,
+.llm-popup-body-dragover .llm-popup-input-row,
+.llm-popup-body-dragover .llm-popup-settings,
+.llm-popup-body-dragover .llm-chat-context-indicator {
+    opacity: 0.2;
+    pointer-events: none;
+}
+
 /* ── Settings Section (collapsible) ──────────────────────────────────── */
 
 .llm-popup-settings {
@@ -385,6 +420,48 @@
 .llm-popup-settings-input[type="number"] {
     max-width: 80px;
     flex: 0 0 80px;
+}
+
+/* ── Seed control strip: wider input + 🔀 auto-randomize toggle ── */
+.llm-popup-seed-controls {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+.llm-popup-seed-controls .llm-popup-settings-input[type="number"] {
+    min-width: 110px;
+    flex: 1 1 auto;
+}
+.llm-popup-seed-btn {
+    background: var(--llm-bg-base);
+    color: var(--llm-text-secondary);
+    border: 1px solid var(--llm-border-strong);
+    border-radius: 4px;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+    flex-shrink: 0;
+}
+.llm-popup-seed-btn:hover {
+    border-color: var(--llm-border-focus);
+    color: var(--llm-text-primary);
+    background: var(--llm-bg-hover);
+}
+.llm-popup-seed-btn:active {
+    background: var(--llm-bg-raised);
+}
+/* Active state: 🔀 auto-randomize is ON */
+.llm-popup-seed-btn.active {
+    color: var(--llm-accent-primary);
+    border-color: var(--llm-accent-primary);
+    background: var(--llm-accent-primary-bg);
 }
 
 /* Single-column sectioned settings layout */
@@ -870,6 +947,187 @@
 
 .llm-manager-file-input { display: none; }
 
+/* ── v2 Grid & Card Styles ─────────────────────────────────────────── */
+
+/* Add new prompt row (full-width button below toolbar) */
+.llm-manager-add-row {
+    width: 100%;
+    margin-top: 6px;
+    margin-bottom: 6px;
+    padding: 8px;
+    font-weight: bold;
+}
+
+/* Filter row */
+.llm-manager-filter-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-shrink: 0;
+    margin-bottom: 6px;
+}
+.llm-manager-filter-label {
+    color: var(--llm-text-secondary);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+.llm-manager-filter-select {
+    flex: 1;
+    background: var(--llm-bg-input);
+    color: var(--llm-text-primary);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 12px;
+    outline: none;
+    max-width: 280px;
+}
+.llm-manager-filter-select:focus {
+    border-color: var(--llm-border-focus);
+}
+
+/* Batch operations bar */
+.llm-manager-batch-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 2px;
+    flex-shrink: 0;
+    margin-bottom: 4px;
+    justify-content: space-between;
+}
+.llm-manager-batch-left,
+.llm-manager-batch-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.llm-manager-batch-label {
+    color: var(--llm-accent-primary);
+    font-size: 11px;
+}
+
+/* Grid layout */
+.llm-manager-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 8px;
+    flex: 1;
+    overflow-y: auto;
+    padding: 2px 0;
+}
+
+/* Card */
+.llm-manager-card {
+    background: var(--llm-bg-surface);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 8px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transition: border-color 0.15s;
+}
+.llm-manager-card:hover {
+    border-color: var(--llm-border-strong);
+}
+.llm-manager-card-system {
+    opacity: 0.85;
+    background: rgba(20, 20, 40, 0.4);
+}
+
+/* Card action row */
+.llm-manager-card-actions {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+
+/* Card title */
+.llm-manager-card-title {
+    font-weight: 600;
+    font-size: 12px;
+    color: var(--llm-text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Card text preview */
+.llm-manager-card-text {
+    font-size: 11px;
+    color: var(--llm-text-secondary);
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    line-height: 1.4;
+    cursor: pointer;
+    word-break: break-word;
+}
+.llm-manager-card-text.expanded {
+    display: block;
+    -webkit-line-clamp: unset;
+}
+.llm-manager-card-text:hover {
+    background: var(--llm-bg-hover);
+    border-radius: 3px;
+}
+
+/* Card footer */
+.llm-manager-card-footer {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: auto;
+}
+.llm-manager-card-chars {
+    font-size: 10px;
+    color: var(--llm-accent-green);
+    flex-shrink: 0;
+}
+.llm-manager-card-cat-select {
+    font-size: 11px;
+    background: var(--llm-bg-input);
+    color: var(--llm-text-primary);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 3px;
+    padding: 1px 4px;
+    max-width: 120px;
+    outline: none;
+}
+.llm-manager-card-cat-select:focus {
+    border-color: var(--llm-border-focus);
+}
+
+/* Default badge */
+.llm-manager-default-badge {
+    font-size: 9px;
+    color: var(--llm-accent-green);
+    opacity: 0.7;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+/* Category manager modal rows */
+.llm-manager-cat-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 4px;
+    border-bottom: 1px solid var(--llm-border-subtle);
+}
+.llm-manager-cat-row:last-child {
+    border-bottom: none;
+}
+
+/* Small variant for select */
+.llm-manager-select-small {
+    font-size: 11px;
+    padding: 2px 4px;
+    max-width: 140px;
+}
+
 /* ========================================================================
    llm-chat Improvements (Features 2–20)
    ======================================================================== */
@@ -925,52 +1183,6 @@
     border-left-color: #f59e0b;
 }
 
-/* ── Scroll-to-Bottom Button ──────────────────────────────────────── */
-
-.llm-chat-scroll-bottom-btn {
-    position: sticky;
-    bottom: 8px;
-    float: right;
-    z-index: 10;
-    display: none;
-    align-items: center;
-    gap: 4px;
-    padding: 6px 14px;
-    background: var(--llm-btn-default-bg);
-    color: var(--llm-text-primary);
-    border: 1px solid var(--llm-border-strong);
-    border-radius: 20px;
-    cursor: pointer;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
-    font-size: 12px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-    transition: background 0.15s, opacity 0.2s;
-    opacity: 0;
-    pointer-events: none;
-}
-.llm-chat-scroll-bottom-btn.llm-scroll-bottom-visible {
-    display: flex;
-    opacity: 1;
-    pointer-events: auto;
-}
-.llm-chat-scroll-bottom-btn:hover {
-    background: var(--llm-btn-default-hover);
-}
-.llm-chat-scroll-badge {
-    display: none;
-    background: var(--llm-accent-user);
-    color: #fff;
-    font-size: 10px;
-    min-width: 16px;
-    height: 16px;
-    border-radius: 10px;
-    text-align: center;
-    line-height: 16px;
-    padding: 0 4px;
-}
-.llm-chat-scroll-badge:not(:empty) {
-    display: inline-block;
-}
 
 /* ── Thinking Blocks (collapsible reasoning) ──────────────────────── */
 
@@ -1168,10 +1380,11 @@
     display: none;
     font-size: 16px;
     cursor: default;
-    margin-right: 8px;
+    margin-right: 4px;
     vertical-align: middle;
     line-height: 1;
     opacity: 0.9;
+    flex-shrink: 0;
 }
 .llm-popup-stop-btn {
     background: var(--llm-btn-default-bg);
@@ -1238,6 +1451,9 @@
     font-family: monospace;
     font-size: 12px;
     line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: break-word;
 }
 .llm-chat-bubble-text code {
     background: var(--llm-bg-surface);
@@ -1305,19 +1521,241 @@
     height: 14px;
 }
 
-/* ── Mode Pill (canvas button area) ──────────────────────────────── */
+/* ── Button Container & Row Layout (two-row) ───────────────────────── */
+.llm-chat-button-container {
+    display: flex; flex-direction: column; gap: 6px; padding: 6px 8px;
+    width: 100%; box-sizing: border-box;
+}
+.llm-button-row {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    box-sizing: border-box;
+}
+.llm-button-row-top {
+    justify-content: flex-start;
+}
+.llm-button-row-bottom {
+    justify-content: flex-start;
+}
+
+/* ── Canvas Action Buttons (popup-inspired styling) ──────────────── */
+
+.llm-canvas-btn {
+    flex: none;
+    color: var(--llm-text-primary);
+    background: var(--llm-btn-default-bg);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+    padding: 6px 8px;
+    cursor: pointer;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 12px;
+    line-height: 1.3;
+    user-select: none;
+    white-space: nowrap;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.llm-canvas-btn:hover {
+    background: var(--llm-btn-default-hover);
+    border-color: var(--llm-accent-primary);
+    color: var(--llm-text-primary);
+}
+
+/* ── Mode Toggle Arrow Badge (canvas button area) ────────────────── */
 
 .llm-mode-pill {
     font-size: 14px;
-    cursor: help;
+    cursor: pointer;
     flex-shrink: 0;
-    padding: 0 2px;
-    opacity: 0.8;
-    transition: opacity 0.15s;
-    line-height: 1;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid transparent;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-weight: 600;
+    line-height: 1.5;
+    opacity: 0.85;
+    transition: opacity 0.15s, background 0.15s, border-color 0.15s;
+    user-select: none;
+    min-width: 18px;
+    text-align: center;
 }
 .llm-mode-pill:hover {
     opacity: 1;
+}
+/* Chat mode: purple accent */
+.llm-mode-pill[data-mode="chat"] {
+    background: rgba(167, 139, 250, 0.12);
+    color: #a78bfa;
+    border-color: rgba(167, 139, 250, 0.3);
+}
+.llm-mode-pill[data-mode="chat"]:hover {
+    background: rgba(167, 139, 250, 0.2);
+}
+/* Enhancer mode: green accent */
+.llm-mode-pill[data-mode="enhancer"] {
+    background: rgba(52, 211, 153, 0.12);
+    color: #34d399;
+    border-color: rgba(52, 211, 153, 0.3);
+}
+.llm-mode-pill[data-mode="enhancer"]:hover {
+    background: rgba(52, 211, 153, 0.2);
+}
+
+/* ── Gear Icon / Utility Buttons (canvas node) ───────────────────── */
+
+.llm-settings-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--llm-text-secondary);
+    font-size: 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+    padding: 2px 6px;
+    line-height: 1.4;
+    opacity: 0.7;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    transition: opacity 0.15s, background 0.15s, border-color 0.15s, color 0.15s;
+}
+.llm-settings-btn:hover {
+    opacity: 1;
+    background: var(--llm-btn-default-hover);
+    border-color: var(--llm-border-subtle);
+    color: var(--llm-text-primary);
+}
+
+/* ── Hidden canvas widget (zero vertical space) ────────────────────── */
+.llm-widget-hidden {
+    display: none !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+}
+
+/* ── Settings Popup (narrower overlay) ──────────────────────────────
+   Note: createOverlayModal(prefix) generates classes as `${prefix}-overlay`,
+   `${prefix}-panel`, `${prefix}-header`, `${prefix}-body`, `${prefix}-footer`.
+   With prefix="llm-settings-popup", classes become:
+   llm-settings-popup-overlay, llm-settings-popup-panel, etc.
+   ───────────────────────────────────────────────────────────────── */
+
+/* Base overlay styles (mirrors .llm-popup-overlay) */
+.llm-settings-popup-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    color: var(--llm-text-primary);
+}
+
+/* Base panel styles (mirrors .llm-popup-panel) with narrower width */
+.llm-settings-popup-panel {
+    background: var(--llm-bg-surface);
+    border: 1px solid var(--llm-border-default);
+    border-radius: 10px;
+    padding: 0;
+    width: 480px;
+    max-width: 90vw;
+    max-height: 98vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.65);
+    overflow: hidden;
+}
+
+/* Header */
+.llm-settings-popup-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--llm-border-subtle);
+    background: var(--llm-bg-raised);
+    flex-shrink: 0;
+}
+.llm-settings-popup-header-title {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+.llm-settings-popup-close-btn {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: none;
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    cursor: pointer;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    transition: background 0.15s, color 0.15s;
+}
+.llm-settings-popup-close-btn:hover {
+    background: rgba(239, 68, 68, 0.35);
+    color: #fca5a5;
+}
+
+/* Body */
+.llm-settings-popup-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 0;
+}
+
+/* Footer */
+.llm-settings-popup-footer {
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px 12px;
+    border-top: 1px solid var(--llm-border-subtle);
+    background: var(--llm-bg-raised);
+    flex-shrink: 0;
+}
+
+/* Nested settings panel inside popup — remove double border/padding */
+.llm-settings-popup-body .llm-popup-settings {
+    border: none;
+    padding: 0;
+    margin: 0;
+}
+.llm-settings-popup-body .llm-popup-settings-sections {
+    gap: 8px;
+}
+
+/* ── Settings "Apply & Close" button ──────────────────────────────── */
+
+.llm-settings-apply-btn {
+    padding: 6px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    background: var(--llm-accent-primary-bg);
+    color: var(--llm-accent-primary);
+    border: 1px solid var(--llm-accent-primary);
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.15s;
+}
+.llm-settings-apply-btn:hover {
+    background: rgba(167, 139, 250, 0.25);
 }
 
 /* ── Streaming Animation ──────────────────────────────────────────── */
@@ -2296,7 +2734,6 @@
     max-height: 120px;
     overflow-y: auto;
 }
-
 /* ── Dot bullet ── */
 .llm-model-browser-dot {
     color: var(--llm-accent-primary);
@@ -2309,3 +2746,1459 @@
     margin-left: 2px;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   Enhancer History — Card Layout (redesigned output history popup)
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Card Container ───────────────────────────────────────────────── */
+
+.enhancer-card {
+    background: var(--llm-bg-card);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 8px;
+    margin-bottom: 8px;
+    overflow: hidden;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.enhancer-card:hover {
+    border-color: var(--llm-border-strong);
+}
+.enhancer-card:last-child {
+    margin-bottom: 0;
+}
+
+/* ── Selected state ───────────────────────────────────────────────── */
+
+.enhancer-card.enhancer-card-selected {
+    border-color: var(--llm-accent-primary, #4f8cff);
+    box-shadow: 0 0 0 1px var(--llm-accent-primary, #4f8cff);
+}
+
+/* ── Main content row: images (left) + output (right) ─────────────── */
+
+.enhancer-card-main {
+    display: flex;
+    flex-direction: row;
+    gap: 0;
+    min-height: 100px;
+}
+
+/* ── Images Section (left, conditional) ───────────────────────────── */
+
+.enhancer-card-images {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 10px;
+    flex-shrink: 0;
+    background: var(--llm-bg-base);
+    border-right: 1px solid var(--llm-border-subtle);
+    min-width: 100px;
+}
+
+.enhancer-card-image-wrapper {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+}
+.enhancer-card-image-wrapper img {
+    width: 72px;
+    height: 72px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1px solid var(--llm-border-strong);
+    cursor: zoom-in;
+    background: var(--llm-bg-base);
+    display: block;
+}
+.enhancer-card-image-wrapper img:hover {
+    border-color: var(--llm-accent-primary, #4f8cff);
+}
+.enhancer-card-image-label {
+    font-size: 9px;
+    color: var(--llm-text-muted);
+    text-align: center;
+    white-space: nowrap;
+    font-weight: 500;
+    letter-spacing: 0.03em;
+}
+.enhancer-card-image-arrow {
+    font-size: 16px;
+    color: var(--llm-text-muted);
+    opacity: 0.6;
+    flex-shrink: 0;
+    user-select: none;
+}
+
+/* ── Card variant: no images ──────────────────────────────────────── */
+
+.enhancer-card.enhancer-card-no-images .enhancer-card-images {
+    display: none;
+}
+.enhancer-card.enhancer-card-no-images .enhancer-card-output {
+    border-left: none;
+}
+
+/* ── Output Section (right, primary) ──────────────────────────────── */
+
+.enhancer-card-output {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 10px 12px;
+    overflow: hidden;
+}
+
+.enhancer-card-output-text {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--llm-text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+    -webkit-user-select: text;
+    flex: 1;
+}
+.enhancer-card-output-text pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: break-word;
+}
+.enhancer-card-output-text p {
+    margin: 0 0 6px 0;
+}
+.enhancer-card-output-text p:last-child {
+    margin-bottom: 0;
+}
+
+/* ── Output actions row (copy / paste) ────────────────────────────── */
+
+.enhancer-card-output-actions {
+    display: flex;
+    gap: 2px;
+    margin-top: 6px;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.enhancer-card:hover .enhancer-card-output-actions {
+    opacity: 1;
+}
+.enhancer-card-output-actions .llm-chat-action-btn {
+    background: none;
+    border: none;
+    color: var(--llm-btn-ghost-color);
+    cursor: pointer;
+    padding: 2px 4px;
+    font-size: 13px;
+    line-height: 1;
+    border-radius: 3px;
+    transition: background 0.1s, color 0.1s;
+}
+.enhancer-card-output-actions .llm-chat-action-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--llm-btn-ghost-hover);
+}
+
+/* ── Timestamp in output section ──────────────────────────────────── */
+
+.enhancer-card-timestamp {
+    font-size: 10px;
+    color: var(--llm-text-muted);
+    margin-top: 4px;
+    opacity: 0.7;
+    flex-shrink: 0;
+}
+
+/* ── Thinking Block in Enhancer Card (collapsible, above output) ─── */
+
+.enhancer-card-thinking {
+    margin: 0 0 8px 0;
+    background: #111318;
+    border: 1px solid var(--llm-border-default);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.enhancer-card-thinking-summary {
+    padding: 4px 8px;
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--llm-text-secondary);
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.enhancer-card-thinking-summary:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+.enhancer-card-thinking-content {
+    padding: 4px 8px 8px;
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    border-top: 1px solid var(--llm-border-subtle);
+    max-height: 200px;
+    overflow-y: auto;
+    color: var(--llm-text-muted);
+    font-style: italic;
+}
+
+/* ── Details Section (collapsible, bottom) ────────────────────────── */
+
+.enhancer-card-details {
+    border-top: 1px solid var(--llm-border-subtle);
+    font-size: 11px;
+}
+.enhancer-card-details summary {
+    cursor: pointer;
+    color: var(--llm-text-muted);
+    font-size: 11px;
+    user-select: none;
+    padding: 6px 12px;
+    background: var(--llm-bg-base);
+    transition: color 0.15s, background 0.15s;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.enhancer-card-details summary::-webkit-details-marker {
+    display: none;
+}
+.enhancer-card-details summary:hover {
+    color: var(--llm-text-secondary);
+    background: var(--llm-bg-hover);
+}
+.enhancer-card-details[open] summary {
+    border-bottom: 1px solid var(--llm-border-subtle);
+    color: var(--llm-text-secondary);
+}
+
+.enhancer-card-details-content {
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    background: var(--llm-bg-surface);
+}
+
+.enhancer-card-detail-row {
+    display: flex;
+    flex-direction: row;
+    gap: 6px;
+    align-items: flex-start;
+    padding: 2px 0;
+}
+.enhancer-card-detail-icon {
+    flex-shrink: 0;
+    width: 18px;
+    text-align: center;
+    font-size: 12px;
+    line-height: 1.5;
+}
+.enhancer-card-detail-label {
+    flex-shrink: 0;
+    color: var(--llm-text-muted);
+    font-weight: 500;
+    min-width: 52px;
+    font-size: 11px;
+    line-height: 1.5;
+}
+.enhancer-card-detail-value {
+    color: var(--llm-text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 11px;
+    line-height: 1.5;
+    flex: 1;
+    min-width: 0;
+}
+.enhancer-card-detail-value.enhancer-card-detail-input {
+    max-height: 60px;
+    overflow-y: auto;
+}
+.enhancer-card-detail-value.enhancer-card-detail-system {
+    max-height: 80px;
+    overflow-y: auto;
+}
+
+/* ── Token count badge ────────────────────────────────────────────── */
+
+.enhancer-card-token-badge {
+    font-size: 10px;
+    color: #94a3b8;
+    opacity: 0.8;
+    margin-left: auto;
+}
+
+/* ── Footer Controls ──────────────────────────────────────────────── */
+
+.enhancer-card-footer {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    padding: 8px 12px;
+    border-top: 1px solid var(--llm-border-subtle);
+    background: var(--llm-bg-raised);
+    flex-shrink: 0;
+}
+
+.enhancer-card-footer-btn {
+    background: var(--llm-btn-default-bg);
+    color: var(--llm-text-secondary);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+    padding: 5px 12px;
+    cursor: pointer;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 11px;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+    white-space: nowrap;
+}
+.enhancer-card-footer-btn:hover {
+    color: var(--llm-text-primary);
+    border-color: var(--llm-border-strong);
+    background: var(--llm-btn-default-hover);
+}
+.enhancer-card-footer-btn.enhancer-card-footer-btn-danger:hover {
+    color: var(--llm-btn-danger-hover, #ef4444);
+    border-color: rgba(239, 68, 68, 0.3);
+    background: rgba(239, 68, 68, 0.08);
+}
+
+.enhancer-card-footer-label {
+    font-size: 11px;
+    color: var(--llm-text-muted);
+    margin-left: auto;
+}
+
+/* ── Empty state ──────────────────────────────────────────────────── */
+
+.enhancer-card-empty {
+    color: var(--llm-text-muted);
+    text-align: center;
+    padding: 40px 12px;
+    font-size: 12px;
+    font-style: italic;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Lightbox overlay — full-screen image preview
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.llm-lightbox-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483647; /* max z-index to appear above everything */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(4px);
+    cursor: zoom-out;
+    animation: llm-lightbox-fadein 0.2s ease;
+}
+
+.llm-lightbox-overlay .llm-lightbox-image {
+    max-width: 92vw;
+    max-height: 92vh;
+    object-fit: contain;
+    border-radius: 6px;
+    box-shadow: 0 8px 48px rgba(0, 0, 0, 0.6);
+    cursor: default;
+    animation: llm-lightbox-zoom 0.25s ease;
+}
+
+.llm-lightbox-overlay .llm-lightbox-close {
+    position: fixed;
+    top: 16px;
+    right: 20px;
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #fff;
+    font-size: 22px;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+    z-index: 1;
+    line-height: 1;
+}
+
+.llm-lightbox-overlay .llm-lightbox-close:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+@keyframes llm-lightbox-fadein {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+@keyframes llm-lightbox-zoom {
+    from { transform: scale(0.92); opacity: 0; }
+    to   { transform: scale(1);   opacity: 1; }
+}
+
+/* ── Inline edit textarea for assistant message editing ─────────────── */
+
+.llm-chat-edit-textarea {
+    width: 100%;
+    min-height: 60px;
+    padding: 8px 10px;
+    font-size: 13px;
+    line-height: 1.5;
+    font-family: inherit;
+    color: var(--llm-text-primary);
+    background: var(--llm-bg-input);
+    border: 1px solid var(--llm-border-focus);
+    border-radius: 6px;
+    resize: vertical;
+    outline: none;
+    box-sizing: border-box;
+    margin-top: 4px;
+}
+
+.llm-chat-edit-textarea:focus {
+    box-shadow: 0 0 0 2px var(--llm-accent-primary-bg);
+}
+
+.llm-chat-save-btn,
+.llm-chat-cancel-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: background 0.15s;
+    line-height: 1;
+}
+
+.llm-chat-save-btn:hover {
+    background: var(--llm-accent-green-bg);
+}
+
+.llm-chat-cancel-btn:hover {
+    background: rgba(239, 68, 68, 0.15);
+}
+
+/* ── Enhancer Export Dialog ──────────────────────────────────────────── */
+
+.llm-export-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+}
+
+.llm-export-dialog {
+    background: var(--llm-bg-primary, #1e1e2e);
+    border: 1px solid var(--llm-border-strong, #444);
+    border-radius: 8px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    width: 560px;
+    max-width: 90vw;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    color: var(--llm-text-primary, #d4d4d4);
+}
+
+.llm-export-dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--llm-border-strong, #444);
+    font-weight: 600;
+    font-size: 15px;
+}
+
+.llm-export-dialog-title {
+    flex: 1;
+}
+
+.llm-export-dialog-close {
+    background: none;
+    border: none;
+    color: var(--llm-text-secondary, #999);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    line-height: 1;
+}
+.llm-export-dialog-close:hover {
+    background: var(--llm-bg-hover, rgba(255,255,255,0.1));
+    color: var(--llm-text-primary, #d4d4d4);
+}
+
+.llm-export-dialog-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+}
+
+.llm-export-section {
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--llm-border-subtle, rgba(255,255,255,0.06));
+}
+.llm-export-section:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+}
+
+.llm-export-section-title {
+    font-weight: 600;
+    font-size: 13px;
+    margin-bottom: 8px;
+    color: var(--llm-text-primary, #d4d4d4);
+}
+
+.llm-export-warning {
+    font-size: 12px;
+    color: #f59e0b;
+    margin-bottom: 8px;
+    padding: 6px 8px;
+    background: rgba(245, 158, 11, 0.1);
+    border-radius: 4px;
+    border-left: 3px solid #f59e0b;
+}
+
+.llm-export-folder-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.llm-export-folder-input {
+    flex: 1;
+    padding: 6px 10px;
+    border: 1px solid var(--llm-border-strong, #444);
+    border-radius: 4px;
+    background: var(--llm-bg-input, #2a2a3e);
+    color: var(--llm-text-primary, #d4d4d4);
+    font-size: 13px;
+    font-family: monospace;
+}
+.llm-export-folder-input:focus {
+    outline: none;
+    border-color: var(--llm-accent, #7c5cfc);
+}
+
+.llm-export-browse-btn {
+    padding: 6px 12px;
+    background: var(--llm-bg-raised, #2a2a3e);
+    border: 1px solid var(--llm-border-strong, #444);
+    border-radius: 4px;
+    color: var(--llm-text-primary, #d4d4d4);
+    cursor: pointer;
+    font-size: 13px;
+    white-space: nowrap;
+}
+.llm-export-browse-btn:hover {
+    background: var(--llm-bg-hover, rgba(255,255,255,0.1));
+}
+
+/* Folder picker popup */
+.llm-export-folder-picker {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    background: var(--llm-bg-raised, #2a2a3e);
+    border: 1px solid var(--llm-border-strong, #444);
+    border-radius: 4px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    max-height: 240px;
+    overflow-y: auto;
+    margin-top: 4px;
+}
+
+.llm-export-folder-picker-path {
+    padding: 6px 10px;
+    font-size: 12px;
+    color: var(--llm-text-secondary, #999);
+    border-bottom: 1px solid var(--llm-border-subtle, rgba(255,255,255,0.06));
+    word-break: break-all;
+    font-family: monospace;
+}
+
+.llm-export-folder-picker-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 6px 10px;
+    background: none;
+    border: none;
+    color: var(--llm-text-primary, #d4d4d4);
+    cursor: pointer;
+    font-size: 13px;
+}
+.llm-export-folder-picker-item:hover {
+    background: var(--llm-bg-hover, rgba(255,255,255,0.1));
+}
+
+.llm-export-folder-picker-select {
+    border-top: 1px solid var(--llm-border-subtle, rgba(255,255,255,0.06));
+    font-weight: 600;
+    color: var(--llm-accent, #7c5cfc);
+}
+
+/* Checkbox rows */
+.llm-export-checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    cursor: pointer;
+    font-size: 13px;
+}
+.llm-export-checkbox-row input[type="checkbox"] {
+    accent-color: var(--llm-accent, #7c5cfc);
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+.llm-export-checkbox-row:hover {
+    color: var(--llm-text-bright, #fff);
+}
+
+/* Radio groups */
+.llm-export-radio-label {
+    font-size: 12px;
+    color: var(--llm-text-secondary, #999);
+    margin-bottom: 4px;
+    margin-top: 6px;
+}
+.llm-export-radio-label:first-child {
+    margin-top: 0;
+}
+
+.llm-export-radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.llm-export-radio-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    cursor: pointer;
+    font-size: 13px;
+}
+.llm-export-radio-row input[type="radio"] {
+    accent-color: var(--llm-accent, #7c5cfc);
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+.llm-export-radio-row:hover {
+    color: var(--llm-text-bright, #fff);
+}
+
+/* Naming pattern */
+.llm-export-naming-desc {
+    font-size: 11px;
+    color: var(--llm-text-secondary, #999);
+    margin-bottom: 4px;
+}
+
+.llm-export-naming-desc-updated {
+    font-size: 11px;
+    color: var(--llm-text-secondary, #999);
+    margin-bottom: 4px;
+    line-height: 1.4;
+}
+
+.llm-export-naming-input {
+    width: 100%;
+    padding: 6px 10px;
+    border: 1px solid var(--llm-border-strong, #444);
+    border-radius: 4px;
+    background: var(--llm-bg-input, #2a2a3e);
+    color: var(--llm-text-primary, #d4d4d4);
+    font-size: 13px;
+    font-family: monospace;
+    box-sizing: border-box;
+}
+.llm-export-naming-input:focus {
+    outline: none;
+    border-color: var(--llm-accent, #7c5cfc);
+}
+
+/* Dropdown styles */
+.llm-export-dropdown {
+    width: 100%;
+    padding: 6px 10px;
+    border: 1px solid var(--llm-border-strong, #444);
+    border-radius: 4px;
+    background: var(--llm-bg-input, #2a2a3e);
+    color: var(--llm-text-primary, #d4d4d4);
+    font-size: 13px;
+    font-family: inherit;
+    box-sizing: border-box;
+    cursor: pointer;
+    appearance: auto;
+    -webkit-appearance: auto;
+    -moz-appearance: auto;
+}
+.llm-export-dropdown:focus {
+    outline: none;
+    border-color: var(--llm-accent, #7c5cfc);
+}
+.llm-export-dropdown option {
+    background: var(--llm-bg-raised, #2a2a3e);
+    color: var(--llm-text-primary, #d4d4d4);
+}
+
+.llm-export-dropdown-label {
+    font-size: 12px;
+    color: var(--llm-text-secondary, #999);
+    margin-bottom: 4px;
+    margin-top: 6px;
+}
+.llm-export-dropdown-label:first-child {
+    margin-top: 0;
+}
+
+/* Separator row */
+.llm-export-separator-row {
+    display: flex;
+    flex-direction: column;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--llm-border-subtle, rgba(255,255,255,0.06));
+}
+
+/* Mode indicator */
+.llm-export-mode-indicator {
+    font-size: 11px;
+    color: var(--llm-accent, #7c5cfc);
+    margin-top: 6px;
+    padding: 4px 8px;
+    background: rgba(124, 92, 252, 0.08);
+    border-radius: 4px;
+    line-height: 1.4;
+}
+
+/* Preview */
+.llm-export-preview {
+    padding: 8px 10px;
+    background: var(--llm-bg-input, #2a2a3e);
+    border: 1px solid var(--llm-border-subtle, rgba(255,255,255,0.06));
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--llm-text-secondary, #999);
+    white-space: pre-wrap;
+    line-height: 1.5;
+    min-height: 40px;
+    max-height: 100px;
+    overflow-y: auto;
+    font-family: monospace;
+}
+
+/* Footer */
+.llm-export-dialog-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--llm-border-strong, #444);
+}
+
+.llm-export-dialog-footer .llm-popup-close-btn {
+    padding: 6px 14px;
+    background: var(--llm-bg-raised, #2a2a3e);
+    border: 1px solid var(--llm-border-strong, #444);
+    border-radius: 4px;
+    color: var(--llm-text-primary, #d4d4d4);
+    cursor: pointer;
+    font-size: 13px;
+}
+.llm-export-dialog-footer .llm-popup-close-btn:hover {
+    background: var(--llm-bg-hover, rgba(255,255,255,0.1));
+}
+
+.llm-export-dialog-footer .llm-popup-header-btn {
+    padding: 6px 14px;
+    background: var(--llm-accent, #7c5cfc);
+    border: none;
+    border-radius: 4px;
+    color: #fff;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+}
+.llm-export-dialog-footer .llm-popup-header-btn:hover {
+    opacity: 0.9;
+}
+.llm-export-dialog-footer .llm-popup-header-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Database Manager Popup (llm-db-*)
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Reuse popup overlay/panel patterns ── */
+.llm-db-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 10001;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    color: var(--llm-text-primary);
+}
+.llm-db-panel {
+    background: var(--llm-bg-surface);
+    border: 1px solid var(--llm-border-default);
+    border-radius: 10px;
+    padding: 0;
+    width: 720px;
+    max-width: 90vw;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.65);
+    overflow: hidden;
+    resize: both;
+    min-width: 400px;
+    min-height: 300px;
+    box-sizing: border-box;
+}
+.llm-db-panel::-webkit-resizer {
+    background: linear-gradient(135deg, transparent 50%, var(--llm-border-default) 50%);
+    border-radius: 0 0 8px 0;
+    width: 14px;
+    height: 14px;
+}
+.llm-db-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--llm-border-subtle);
+    background: var(--llm-bg-raised);
+    flex-shrink: 0;
+}
+.llm-db-header-title {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+.llm-db-header-btn {
+    background: var(--llm-btn-default-bg);
+    color: var(--llm-text-primary);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 4px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 12px;
+    transition: background 0.15s;
+}
+.llm-db-header-btn:hover {
+    background: var(--llm-btn-default-hover);
+}
+.llm-db-refresh-btn {
+    margin-left: 8px;
+    font-size: 14px;
+    padding: 2px 8px;
+}
+.llm-db-close-btn {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: none;
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    cursor: pointer;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, color 0.15s;
+}
+.llm-db-close-btn:hover {
+    background: rgba(239, 68, 68, 0.35);
+    color: #fca5a5;
+}
+.llm-db-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 0;
+}
+
+/* ── Loading / Error states ── */
+.llm-db-loading {
+    color: var(--llm-text-muted);
+    text-align: center;
+    padding: 40px 12px;
+    font-size: 13px;
+    font-style: italic;
+}
+.llm-db-error {
+    color: #f87171;
+    text-align: center;
+    padding: 32px 12px;
+    font-size: 13px;
+}
+
+/* ── Stats Section ── */
+.llm-db-stats-section {
+    margin-bottom: 4px;
+}
+.llm-db-stats-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+.llm-db-stat-item {
+    background: var(--llm-bg-card);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+    padding: 8px 12px;
+    min-width: 100px;
+    flex: 1 0 auto;
+}
+.llm-db-stat-label {
+    font-size: 11px;
+    color: var(--llm-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 2px;
+}
+.llm-db-stat-value {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--llm-text-primary);
+    word-break: break-all;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.llm-db-actions-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+.llm-db-action-btn {
+    padding: 5px 10px;
+    font-size: 12px;
+}
+.llm-db-live-feedback {
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    margin-bottom: 4px;
+    background: var(--llm-bg-card);
+    border: 1px solid var(--llm-border-subtle);
+    animation: llmDbFadeIn 0.2s ease;
+}
+.llm-db-live-success {
+    color: var(--llm-accent-green);
+    border-color: var(--llm-accent-green);
+}
+.llm-db-live-error {
+    color: #f87171;
+    border-color: #f87171;
+}
+.llm-db-live-warning {
+    color: #cc6600;
+    background: #fff3e0;
+    border-color: #ffb74d;
+}
+.llm-db-danger-btn {
+    background: #d32f2f;
+    color: #fff;
+    border: 1px solid #b71c1c;
+}
+.llm-db-danger-btn:hover {
+    background: #b71c1c;
+}
+.llm-db-danger-btn:disabled {
+    background: #e57373;
+    cursor: not-allowed;
+}
+@keyframes llmDbFadeIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Search + Sort Bar ── */
+.llm-db-control-bar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+}
+.llm-db-search-input {
+    flex: 1;
+    background: var(--llm-bg-input);
+    border: 1px solid var(--llm-border-default);
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: var(--llm-text-primary);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s;
+}
+.llm-db-search-input:focus {
+    border-color: var(--llm-border-focus);
+}
+.llm-db-search-input::placeholder {
+    color: var(--llm-text-muted);
+}
+.llm-db-sort-select {
+    background: var(--llm-bg-input);
+    border: 1px solid var(--llm-border-default);
+    border-radius: 6px;
+    padding: 8px 10px;
+    color: var(--llm-text-primary);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 12px;
+    outline: none;
+    cursor: pointer;
+    min-width: 140px;
+}
+.llm-db-sort-select:focus {
+    border-color: var(--llm-border-focus);
+}
+
+/* ── Search + Clear Buttons ── */
+.llm-db-search-btn {
+    background: var(--llm-bg-input);
+    border: 1px solid var(--llm-border-default);
+    border-radius: 6px;
+    padding: 8px 10px;
+    color: var(--llm-text-primary);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 0.15s, background 0.15s;
+    flex-shrink: 0;
+}
+.llm-db-search-btn:hover {
+    background: var(--llm-bg-hover);
+    border-color: var(--llm-border-focus);
+}
+/* ── Search Results ── */
+.llm-db-search-results {
+    flex: 1;
+    overflow-y: auto;
+}
+.llm-db-search-header {
+    font-size: 13px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
+    background: var(--llm-bg-raised);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+    color: var(--llm-text-secondary);
+}
+.llm-db-match-badge {
+    display: inline-block;
+    background: var(--llm-accent-blue);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 10px;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+
+/* ── Search Session Row ── */
+.llm-db-search-session {
+    margin-bottom: 6px;
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+    overflow: hidden;
+}
+.llm-db-search-session-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    background: var(--llm-bg-card);
+    cursor: pointer;
+    transition: background 0.15s;
+    font-size: 12px;
+}
+.llm-db-search-session-row:hover {
+    background: var(--llm-bg-hover);
+}
+.llm-db-search-session-collapsed .llm-db-search-session-row {
+    opacity: 0.6;
+}
+
+/* ── Match Entries ── */
+.llm-db-search-matches {
+    border-top: 1px solid var(--llm-border-subtle);
+}
+.llm-db-match-entry {
+    padding: 8px 10px 8px 28px;
+    border-bottom: 1px solid var(--llm-border-subtle);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.llm-db-match-entry:last-child {
+    border-bottom: none;
+}
+.llm-db-match-entry:hover {
+    background: var(--llm-bg-hover);
+}
+.llm-db-match-entry-meta {
+    font-size: 11px;
+    color: var(--llm-text-muted);
+    margin-bottom: 4px;
+}
+.llm-db-match-entry-text {
+    line-height: 1.5;
+    word-break: break-word;
+    white-space: pre-wrap;
+    color: var(--llm-text-secondary);
+}
+.llm-db-highlight {
+    background: #fef08a;
+    color: #1e293b;
+    padding: 0 2px;
+    border-radius: 2px;
+}
+
+/* ── Session Explorer ── */
+.llm-db-session-explorer {
+    flex: 1;
+    overflow-y: auto;
+}
+
+/* ── Collapsible Category ── */
+.llm-db-category {
+    margin-bottom: 8px;
+}
+.llm-db-category-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 10px;
+    background: var(--llm-bg-raised);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+    font-size: 13px;
+    font-weight: 600;
+}
+.llm-db-category-header:hover {
+    background: var(--llm-bg-hover);
+}
+.llm-db-category-chevron {
+    font-size: 10px;
+    color: var(--llm-text-muted);
+    transition: transform 0.15s;
+}
+.llm-db-category-count {
+    font-size: 12px;
+    color: var(--llm-text-muted);
+    font-weight: 400;
+}
+.llm-db-category-body {
+    padding: 4px 0 4px 12px;
+}
+.llm-db-empty-message {
+    color: var(--llm-text-muted);
+    text-align: center;
+    padding: 16px 12px;
+    font-size: 12px;
+    font-style: italic;
+}
+
+/* ── Session Row ── */
+.llm-db-session-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--llm-border-subtle);
+    transition: background 0.1s;
+}
+.llm-db-session-row:last-child {
+    border-bottom: none;
+}
+.llm-db-session-row:hover {
+    background: var(--llm-bg-hover);
+}
+.llm-db-session-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+}
+.llm-db-session-date {
+    font-size: 11px;
+    color: #a78bfa;
+}
+.llm-db-session-name {
+    font-size: 14px;
+    color: var(--llm-text-primary);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 320px;
+}
+.llm-db-session-meta {
+    display: flex;
+    gap: 10px;
+    font-size: 11px;
+    color: var(--llm-text-secondary);
+    white-space: nowrap;
+    align-items: center;
+}
+.llm-db-session-metric {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+}
+.llm-db-session-actions {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+}
+.llm-db-open-btn {
+    padding: 3px 8px;
+    font-size: 11px;
+}
+.llm-db-delete-btn {
+    padding: 3px 8px;
+    font-size: 11px;
+    background: var(--llm-btn-danger-bg);
+    border-color: rgba(239, 68, 68, 0.3);
+}
+.llm-db-delete-btn:hover {
+    background: var(--llm-btn-danger-hover);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Settings Section (DB Manager)
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.llm-db-settings-section {
+    margin-bottom: 8px;
+}
+
+.llm-db-settings-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--llm-bg-raised);
+    border: 1px solid var(--llm-border-subtle);
+    border-radius: 6px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.llm-db-settings-header:hover {
+    background: var(--llm-bg-hover);
+}
+
+.llm-db-settings-chevron {
+    font-size: 10px;
+    color: var(--llm-text-muted);
+    transition: transform 0.15s;
+}
+
+.llm-db-settings-body {
+    padding: 10px 12px;
+    border: 1px solid var(--llm-border-subtle);
+    border-top: none;
+    border-radius: 0 0 6px 6px;
+    background: var(--llm-bg-card);
+}
+
+.llm-db-settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--llm-border-subtle);
+}
+
+.llm-db-settings-row:last-of-type {
+    border-bottom: none;
+}
+
+.llm-db-settings-label {
+    font-size: 12px;
+    color: var(--llm-text-secondary);
+    font-weight: 500;
+    flex-shrink: 0;
+    min-width: 120px;
+}
+
+.llm-db-settings-path {
+    font-size: 11px;
+    color: var(--llm-accent-blue);
+    word-break: break-all;
+    text-align: right;
+    font-family: 'Consolas', 'Courier New', monospace;
+}
+
+.llm-db-settings-input {
+    width: 100px;
+    background: var(--llm-bg-input);
+    border: 1px solid var(--llm-border-default);
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: var(--llm-text-primary);
+    font-size: 12px;
+    font-family: 'Inter', system-ui, sans-serif;
+    text-align: right;
+    outline: none;
+}
+
+.llm-db-settings-input:focus {
+    border-color: var(--llm-border-focus);
+}
+
+/* ── Toggle Switch ── */
+.llm-toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+    flex-shrink: 0;
+}
+
+.llm-toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.llm-toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: var(--llm-border-strong);
+    transition: 0.2s;
+    border-radius: 20px;
+}
+
+.llm-toggle-slider:before {
+    position: absolute;
+    content: "";
+    height: 14px;
+    width: 14px;
+    left: 3px;
+    bottom: 3px;
+    background-color: var(--llm-text-primary);
+    transition: 0.2s;
+    border-radius: 50%;
+}
+
+.llm-toggle-switch input:checked + .llm-toggle-slider {
+    background-color: var(--llm-accent-primary);
+}
+
+.llm-toggle-switch input:checked + .llm-toggle-slider:before {
+    transform: translateX(16px);
+}
+
+/* ── Settings Save Button ── */
+.llm-db-settings-save {
+    width: 100%;
+    margin-top: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+/* ── Settings Divider ── */
+.llm-db-settings-divider {
+    border: none;
+    border-top: 1px solid var(--llm-border-subtle);
+    margin: 12px 0;
+}
+
+.llm-db-settings-subtitle {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--llm-text-secondary);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+/* ── Danger Zone ── */
+.llm-db-danger-divider {
+    border-top-color: rgba(239, 68, 68, 0.3);
+}
+
+.llm-db-danger-title {
+    color: #f87171;
+}
+
+.llm-db-destroy-btn {
+    width: 100%;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    background: rgba(239, 68, 68, 0.15);
+    border-color: rgba(239, 68, 68, 0.3);
+    color: #f87171;
+    margin-top: 4px;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.llm-db-destroy-btn:hover {
+    background: rgba(239, 68, 68, 0.25);
+    border-color: rgba(239, 68, 68, 0.5);
+}

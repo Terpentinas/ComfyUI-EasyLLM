@@ -7,6 +7,3 @@ llm_chat_debug_profile.json
 # Python cache
 __pycache__/
 *.pyc
-
-# Removed pre-release artifacts (logs, scratch files, dev scripts, plans)
-remove/

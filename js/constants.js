@@ -6,50 +6,42 @@
  */
 
 // ── Node names this extension applies to ────────────────────────────────
-export const NODE_NAMES = ["EasyLLM", "EasyLLMText", "EasyLLMGGUF"];
+export const NODE_NAMES = ["EasyLLM", "EasyLLMText", "EasyLLMGGUF", "EasyLLM_ImageCapture"];
 
-// ── Visible widget names ────────────────────────────────────────────────
-// Widgets kept visible on canvas for direct editing without popup.
-// "text" enables typing on the node; socket inputs (clip, system_prompt) are not widget rows.
-// Order matches the logical grouping: Setup → Persona → Interaction → Tuning → Hardware
+// ── Visible widget names — All modes ───────────────────────────────────
+// Core tuning params (temperature, max_length, seed) are visible on canvas
+// in all modes for quick adjustment. Seed auto-randomize uses ComfyUI's
+// native `control_after_generate` mechanism (like KSampler) — the 🎲 toggle
+// appears next to the seed input on the canvas.
+// Advanced/hardware params remain in the settings popup (gear icon).
 export const VISIBLE_WIDGET_NAMES = [
     // Section 1: Setup
     "mode",
-    // Section 2: Persona & Input
-    "text",
-    "prompt_template",
-    "system_prompt_text",
-    // Section 3: Tuning
+    // Section 3: Tuning (visible for quick access)
     "temperature",
     "max_length",
     "seed",
-    // Section 4: Hardware (Less Used)
-    "vram_mode",
-    "use_mlock",
 ];
 
 // ── Visible widget names for GGUF nodes ────────────────────────────────
-// Includes GGUF-specific widgets (model_path, n_gpu_layers, n_ctx, chat_template)
-// in addition to the shared settings widgets.
-// Order matches the logical grouping: Setup → Persona → Interaction → Tuning → Hardware
+// GGUF nodes additionally show model_path for model selection on canvas.
+// All other settings (hardware, sampling params) are in the settings popup.
 export const VISIBLE_WIDGET_NAMES_GGUF = [
     // Section 1: Setup
     "model_path",
     "mode",
-    // Section 2: Persona & Input
-    "text",
-    "prompt_template",
-    "system_prompt_text",
-    // Section 3: Tuning
+    // Section 3: Tuning (visible for quick access)
     "temperature",
     "max_length",
     "seed",
-    // Section 4: Hardware (Less Used)
-    "chat_template",
-    "n_ctx",
-    "n_gpu_layers",
-    "vram_mode",
-    "use_mlock",
+];
+
+// ── Visible widget names for Image Capture node ──────────────────────────
+// Only capture_mode is a visible widget on the canvas. The hidden fields
+// (unique_id, prompt, extra_pnginfo) are framework execution metadata injected
+// at runtime — they should be collapsed to zero height.
+export const VISIBLE_WIDGET_NAMES_IMAGE_CAPTURE = [
+    "capture_mode",
 ];
 
 // ── Global popup tracking (only one popup open at a time) ───────────────
@@ -208,6 +200,14 @@ export function findWidgetByName(node, name) {
 .llm-chat-bubble-text {
     word-break: break-word; white-space: pre-wrap;
     user-select: text; -webkit-user-select: text;
+}
+.llm-chat-bubble-text pre {
+    white-space: pre-wrap; word-break: break-word;
+    overflow-wrap: break-word;
+}
+.enhancer-card-output-text pre {
+    white-space: pre-wrap; word-break: break-word;
+    overflow-wrap: break-word;
 }
 
 .llm-chat-model-badge {
@@ -378,6 +378,29 @@ export function findWidgetByName(node, name) {
     color: #e8e8ed; border-color: #3a3e45; background: #2a2d36;
 }
 
+/* ── System Prompt Dropdown (chat popup footer) ────────────────────── */
+.llm-popup-sysprompt-select {
+    background: #22252e; color: #9a9aa5;
+    border: 1px solid #2a2d32; border-radius: 5px;
+    padding: 5px 24px 5px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    max-width: 200px;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8'%3E%3Cpath fill='%239a9aa5' d='M4 5.5L0 1.5h8z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.llm-popup-sysprompt-select:hover {
+    color: #e8e8ed; border-color: #3a3e45; background: #2a2d36;
+}
+.llm-popup-sysprompt-select:focus {
+    outline: none;
+    border-color: #4a6fa5;
+}
+
 /* ── Popup Footer ────────────────────────────────────────────────────── */
 .llm-popup-footer {
     display: flex; justify-content: space-between; align-items: center;
@@ -449,6 +472,23 @@ export function findWidgetByName(node, name) {
     border-top: 1px solid #2a2d32;
 }
 
+/* ── Attachment Blocks ─────────────────────────────────────────────── */
+.llm-chat-attachment {
+    margin: 6px 0; background: #0d0e12;
+    border: 1px solid #2a2d32; border-radius: 6px; overflow: hidden;
+}
+.llm-chat-attachment-summary {
+    padding: 4px 8px; cursor: pointer; font-size: 11px;
+    color: #6688bb; user-select: none;
+}
+.llm-chat-attachment-summary:hover { background: rgba(255,255,255,0.04); }
+.llm-chat-attachment-content {
+    padding: 4px 8px 8px; font-size: 11px; color: #b0b0b8;
+    white-space: pre-wrap; word-break: break-word;
+    font-family: monospace; max-height: 400px; overflow-y: auto;
+    border-top: 1px solid #2a2d32;
+}
+
 /* ── System Prompt Details ─────────────────────────────────────────── */
 .llm-chat-system-prompt-details { margin-top: 6px; font-size: 11px; }
 .llm-chat-system-prompt-summary {
@@ -463,27 +503,6 @@ export function findWidgetByName(node, name) {
     white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto;
 }
 
-/* ── Scroll-to-Bottom Button ──────────────────────────────────────── */
-.llm-chat-scroll-bottom-btn {
-    position: sticky; bottom: 8px; float: right; z-index: 10;
-    display: none; align-items: center; gap: 4px;
-    padding: 6px 14px; background: #22252e; color: #e8e8ed;
-    border: 1px solid #3a3e45; border-radius: 20px; cursor: pointer;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
-    font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-    transition: background 0.15s, opacity 0.2s;
-    opacity: 0; pointer-events: none;
-}
-.llm-chat-scroll-bottom-btn.llm-scroll-bottom-visible {
-    display: flex; opacity: 1; pointer-events: auto;
-}
-.llm-chat-scroll-bottom-btn:hover { background: #2a2d36; }
-.llm-chat-scroll-badge {
-    display: none; background: #4a7abf; color: #fff;
-    font-size: 10px; min-width: 16px; height: 16px;
-    border-radius: 10px; text-align: center; line-height: 16px; padding: 0 4px;
-}
-.llm-chat-scroll-badge:not(:empty) { display: inline-block; }
 
 /* ── Typing Indicator ─────────────────────────────────────────────── */
 .llm-chat-typing-indicator {
@@ -530,17 +549,49 @@ export function findWidgetByName(node, name) {
     margin-right: 8px; vertical-align: middle; line-height: 1; opacity: 0.9;
 }
 
-/* ── Mode Pill ──────────────────────────────────────────────────────── */
+/* ── Mode Toggle Arrow Badge ────────────────────────────────────────── */
 .llm-mode-pill {
-    font-size: 14px; cursor: help; flex-shrink: 0;
-    padding: 0 2px; opacity: 0.8; transition: opacity 0.15s; line-height: 1;
+    font-size: 14px; cursor: pointer; flex-shrink: 0;
+    padding: 1px 6px; border-radius: 4px; border: 1px solid transparent;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-weight: 600; line-height: 1.5; opacity: 0.85;
+    transition: opacity 0.15s, background 0.15s, border-color 0.15s;
+    user-select: none; min-width: 18px; text-align: center;
 }
 .llm-mode-pill:hover { opacity: 1; }
+/* Chat mode: purple accent */
+.llm-mode-pill[data-mode="chat"] {
+    background: rgba(167, 139, 250, 0.12);
+    color: #a78bfa;
+    border-color: rgba(167, 139, 250, 0.3);
+}
+.llm-mode-pill[data-mode="chat"]:hover {
+    background: rgba(167, 139, 250, 0.2);
+}
+/* Enhancer mode: green accent */
+.llm-mode-pill[data-mode="enhancer"] {
+    background: rgba(52, 211, 153, 0.12);
+    color: #34d399;
+    border-color: rgba(52, 211, 153, 0.3);
+}
+.llm-mode-pill[data-mode="enhancer"]:hover {
+    background: rgba(52, 211, 153, 0.2);
+}
 
-/* ── Canvas Button Container ────────────────────────────────────────── */
+/* ── Canvas Button Container (two-row layout) ───────────────────────── */
 .llm-chat-button-container {
-    display: flex; gap: 6px; padding: 4px 8px;
-    align-items: center; width: 100%; box-sizing: border-box;
+    display: flex; flex-direction: column; gap: 6px; padding: 6px 8px;
+    width: 100%; box-sizing: border-box;
+}
+.llm-button-row {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    box-sizing: border-box;
+}
+.llm-button-row-top {
+    justify-content: flex-start;
+}
+.llm-button-row-bottom {
+    justify-content: flex-start;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════

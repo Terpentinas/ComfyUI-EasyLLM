@@ -33,6 +33,7 @@ import threading
 
 import torch
 from PIL import Image
+from PIL.PngImagePlugin import PngInfo
 
 # Qwen chat template format (legacy, kept for backward compatibility)
 QWEN_CHAT_TEMPLATE = "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
@@ -372,45 +373,19 @@ def heuristic_template_from_filename(model_path: str) -> str | None:
     return None
 
 
-def resolve_system_prompt(
-    system_prompt: str,
-    prompt_template: str,
-    system_prompt_text: str,
-) -> str:
-    """Resolve effective system prompt from up to 4 sources.
+def resolve_system_prompt(system_prompt: str, **kwargs) -> str:
+    """Resolve effective system prompt (from forceInput socket only).
 
-    Priority (highest to lowest):
-    1. system_prompt: Connected from another node (forceInput socket)
-    2. prompt_template: Selected dropdown value (looked up via get_prompt_by_name())
-    3. system_prompt_text: Manual text input widget
-    4. Empty string fallback (no system prompt)
+    The system prompt is now exclusively provided via the ``system_prompt``
+    forceInput socket. This wrapper exists for backwards-compatibility.
 
     Args:
         system_prompt: Value from the forceInput socket (may be empty string).
-        prompt_template: Selected template name (e.g. "Art Style Descriptor" or "Custom").
-        system_prompt_text: Manual text typed in the system_prompt_text widget.
 
     Returns:
-        str: The resolved system prompt text, or empty string if all sources are empty.
+        str: The resolved system prompt text, or empty string.
     """
-    # Priority 1: Connected from another node (forceInput socket)
-    if system_prompt and system_prompt.strip():
-        return system_prompt
-
-    # Priority 2: Template selected from dropdown
-    if prompt_template and prompt_template != "Custom":
-        # Import here to avoid circular imports at module level
-        from .prompt_manager import get_prompt_by_name
-        template_text = get_prompt_by_name(prompt_template)
-        if template_text:
-            return template_text
-
-    # Priority 3: Custom text typed in widget
-    if system_prompt_text and system_prompt_text.strip():
-        return system_prompt_text
-
-    # Priority 4: Empty — no system prompt
-    return ""
+    return system_prompt if system_prompt and system_prompt.strip() else ""
 
 
 def resolve_text(text_input: str, text: str) -> str:
@@ -504,22 +479,6 @@ _UNIVERSAL_ROLE_STOP_TOKENS = [
     "USER:",
     "ASSISTANT:",
 ]
-
-
-def auto_seed(seed: int) -> int:
-    """If seed is 0, return a random seed. Otherwise return seed as-is.
-
-    Args:
-        seed: Input seed value. 0 means "auto-randomize".
-
-    Returns:
-        int: A valid random seed in range [1, 0xFFFFFFFF].
-    """
-    if seed == 0:
-        import random
-        return random.randint(1, 0xFFFFFFFF)
-    return seed
-
 
 
 
@@ -2170,7 +2129,11 @@ def _find_gguf_recursive(
 # ── Image Conversion (Vision-Language / Multimodal Support) ──────────────
 
 
-def tensor_to_base64_png(image_tensor: torch.Tensor, max_size: int | None = 1024) -> str:
+def tensor_to_base64_png(
+    image_tensor: torch.Tensor,
+    max_size: int | None = 1024,
+    pnginfo: PngInfo | None = None,
+) -> str:
     """Convert a ComfyUI IMAGE tensor to a base64-encoded PNG data URI.
 
     Used by the multimodal vision-language generation path in EasyLLMGGUF.
@@ -2181,6 +2144,9 @@ def tensor_to_base64_png(image_tensor: torch.Tensor, max_size: int | None = 1024
         image_tensor: Tensor of shape (1, H, W, 3) in float32 [0, 1].
         max_size: Optional max dimension (longest edge). None = no resize.
                   Default 1024.
+        pnginfo: Optional PngInfo metadata to embed in the PNG file.
+                 Pass None (default) for no metadata — preserves backward
+                 compatibility with all existing callers.
 
     Returns:
         str: Base64-encoded PNG data URI (data:image/png;base64,...).
@@ -2203,14 +2169,34 @@ def tensor_to_base64_png(image_tensor: torch.Tensor, max_size: int | None = 1024
             new_h = int(h * ratio)
             img = img.resize((new_w, new_h), Image.LANCZOS)
 
-    # Save to PNG bytes
+    # Save to PNG bytes (with optional metadata)
     buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
+    img.save(buffer, format="PNG", pnginfo=pnginfo)
     buffer.seek(0)
 
     # Encode as base64 and return as data URI
     b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
     return f"data:image/png;base64,{b64}"
+
+
+def base64_to_bytes(b64_data: str) -> bytes:
+    """Convert a base64 data URI (or raw base64 string) to raw bytes.
+
+    Accepts both full data URIs (``data:image/png;base64,...``) and
+    raw base64 strings (without URI prefix).
+
+    Args:
+        b64_data: Base64 string, optionally prefixed with ``data:image/...``.
+
+    Returns:
+        Decoded bytes.
+
+    Raises:
+        ValueError: If the input is not valid base64.
+    """
+    if b64_data.startswith("data:image"):
+        b64_data = b64_data.split(",", 1)[1]
+    return base64.b64decode(b64_data)
 
 
 def get_comfyui_input_dir() -> str:

@@ -9,9 +9,203 @@ import { createOverlayModal, showToast } from "./ui_utils.js";
 import { getActivePopupNode, setActivePopupNode, clearActivePopupNode } from "./constants.js";
 import { openPromptManagerDialog } from "./editor.js";
 import { startProgressTracking, stopProgressTracking, stopCanvasProgressTracking } from "./websocket_bridge.js";
-import { getModelName, abortStreaming, renderPopupHistory, syncPopupSettingsToCanvas, createBubbleElement, hideTypingIndicator, exportChat, exportEnhancerHistory, downloadExport, handlePopupSend, openImagePicker, removeAttachedImage } from "./popup_bubble.js";
-import { createScrollToBottomBtn, updateScrollState, scrollToBottom, estimateContextTokens, autoScrollIfNeeded } from "./popup_utils.js";
+import { getModelName, abortStreaming, renderPopupHistory, syncPopupSettingsToCanvas, createBubbleElement, createEnhancerCardElement, hideTypingIndicator, exportChat, exportEnhancerHistory, downloadExport, handlePopupSend, openImagePicker, handleDroppedFile, removeAttachedImage, openEnhancerExportDialog, rebuildEnhancerActions } from "./popup_bubble.js";
+import { scrollToBottom, estimateContextTokens, autoScrollIfNeeded, renderMarkdown, parseThinkBlocks, parseAttachedTextBlocks } from "./popup_utils.js";
 import { openModelBrowserPopup, closeModelBrowserPopup } from "./popup_model_browser.js";
+import { createSettingsPanel } from "./popup_settings.js";
+import { fetchPrompts } from "./api.js";
+
+// ── Helper: Load persisted history from disk on popup open (Phase 2) ──
+
+const _PAGE_SIZE = 200;
+
+async function _loadHistoryFromDisk(node) {
+    try {
+        const resp = await fetch(
+            `/easyllm/db/history/${node.id}?limit=${_PAGE_SIZE}`
+        );
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        // Handle empty result: clear stale cache (server has no data for this node)
+        if (!data.available || !data.entries || data.entries.length === 0) {
+            node._chatHistory = [];
+            node._historyPagination = null;
+            renderPopupHistory(node);
+            return;
+        }
+
+        // Server is the single source of truth; replace local cache unconditionally.
+        node._chatHistory = data.entries;
+        node._historyPagination = {
+            totalCount: data.total_count || data.entries.length,
+            loadedCount: data.entries.length,
+            allLoaded: (data.entries.length >= (data.total_count || data.entries.length)),
+            isLoading: false,
+        };
+        renderPopupHistory(node);
+        console.debug(
+            `[LLM Chat DB] Loaded ${data.entries.length}/${data.total_count || data.entries.length} entries from disk for node ${node.id}`
+        );
+    } catch (e) {
+        // DB unavailable — silently keep workflow JSON data
+        console.debug(`[LLM Chat DB] Failed to load history from disk: ${e}`);
+    }
+}
+
+/**
+ * Fetch the next page of older entries when user scrolls to the top.
+ * Prepends them to node._chatHistory and re-renders.
+ */
+async function _loadNextHistoryPage(node) {
+    const pag = node._historyPagination;
+    if (!pag || pag.allLoaded || pag.isLoading) return;
+    pag.isLoading = true;
+
+    // Show loading indicator at the top of the history container
+    const container = node._popupHistoryEl;
+    let loadIndicator = container ? container.querySelector(".llm-history-load-more") : null;
+    if (loadIndicator) {
+        loadIndicator.textContent = "⏳ Loading earlier messages...";
+    }
+
+    try {
+        const resp = await fetch(
+            `/easyllm/db/history/${node.id}?offset=${pag.loadedCount}&limit=${_PAGE_SIZE}`
+        );
+        if (!resp.ok) {
+            pag.allLoaded = true;
+            return;
+        }
+        const data = await resp.json();
+        if (!data.entries || data.entries.length === 0) {
+            pag.allLoaded = true;
+            if (loadIndicator) {
+                loadIndicator.textContent = "✓ All messages loaded";
+                setTimeout(() => { if (loadIndicator?.parentNode) loadIndicator.remove(); }, 1500);
+            }
+            return;
+        }
+
+        // Save current scroll height for position restoration after prepend
+        const prevScrollHeight = container ? container.scrollHeight : 0;
+
+        // Prepend older entries
+        node._chatHistory = [...data.entries, ...node._chatHistory];
+        pag.loadedCount += data.entries.length;
+        if (pag.loadedCount >= pag.totalCount) {
+            pag.allLoaded = true;
+        }
+
+        // Re-render
+        renderPopupHistory(node);
+
+        // Restore scroll position: new content was prepended above, so scroll down
+        // by the difference in scrollHeight to keep the same visual position.
+        if (container) {
+            const newScrollHeight = container.scrollHeight;
+            container.scrollTop = newScrollHeight - prevScrollHeight;
+        }
+
+        // If all loaded, update the indicator
+        if (pag.allLoaded && loadIndicator) {
+            loadIndicator.textContent = "✓ All messages loaded";
+            setTimeout(() => { if (loadIndicator?.parentNode) loadIndicator.remove(); }, 1500);
+        }
+    } catch (e) {
+        console.debug(`[LLM Chat DB] Failed to load next page: ${e}`);
+    } finally {
+        pag.isLoading = false;
+    }
+}
+
+/**
+ * Load ALL remaining history entries (used before save-on-close).
+ * Idempotent if all entries are already loaded.
+ */
+async function _loadRemainingHistory(node) {
+    const pag = node._historyPagination;
+    if (!pag || pag.allLoaded || pag.isLoading) return;
+    pag.isLoading = true;
+    try {
+        while (!pag.allLoaded) {
+            const resp = await fetch(
+                `/easyllm/db/history/${node.id}?offset=${pag.loadedCount}&limit=${_PAGE_SIZE}`
+            );
+            if (!resp.ok) break;
+            const data = await resp.json();
+            if (!data.entries || data.entries.length === 0) break;
+            node._chatHistory = [...data.entries, ...node._chatHistory];
+            pag.loadedCount += data.entries.length;
+            if (pag.loadedCount >= pag.totalCount) {
+                pag.allLoaded = true;
+            }
+        }
+    } catch (e) {
+        console.debug(`[LLM Chat DB] Failed to load remaining history: ${e}`);
+    } finally {
+        pag.isLoading = false;
+    }
+}
+
+// ── Helper: Load enhancer history from disk on popup open ──
+// Server is the single source of truth — ImageCapture now persists images
+// via /append-images (server-first), so local enrichments are never ahead of disk.
+
+async function _loadEnhancerHistoryFromDisk(node) {
+    // ── Guard: prevent re-entrant close/re-open infinite loop ──
+    if (node._loadingEnhancerHistory) return;
+    node._loadingEnhancerHistory = true;
+    try {
+        const resp = await fetch(
+            `/easyllm/db/history/${node.id}?type=enhancer`
+        );
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        // Handle empty result: clear stale cache (server has no enhancer data for this node)
+        if (!data.available || !data.entries || data.entries.length === 0) {
+            node._enhancerHistory = [];
+            return;
+        }
+
+        // ── Staleness check: prevent overwriting newer in-memory data ──
+        // The in-memory _enhancerHistory is written by onExecuted → pushEnhancerEntry()
+        // before the popup even opens. Disk data can lag behind if:
+        //   • The DB write from onExecuted hasn't completed yet
+        //   • The user opened the popup very quickly after queueing
+        // Unconditionally replacing with disk data would lose the latest
+        // entry's raw text (which contains <think> blocks for the "Thought:" row).
+        // Only replace when disk has MORE entries than in-memory.
+        const inMemoryCount = (node._enhancerHistory || []).length;
+        const diskCount = data.entries.length;
+        if (diskCount <= inMemoryCount) {
+            // Disk has same or fewer entries — in-memory is already current.
+            return;
+        }
+
+        // Disk has more entries — merge: keep in-memory entries that disk doesn't have
+        // (avoids replacing rich in-memory objects with serialized disk copies)
+        if (inMemoryCount > 0 && diskCount > inMemoryCount) {
+            // Only append the new disk entries that in-memory doesn't have
+            const newDiskEntries = data.entries.slice(0, diskCount - inMemoryCount);
+            node._enhancerHistory = [...newDiskEntries, ...node._enhancerHistory];
+        } else {
+            // No in-memory data — use disk data as-is
+            node._enhancerHistory = data.entries;
+        }
+
+        // Re-open the popup to re-render if overlay is already open
+        if (node._popupOverlay) {
+            await closeChatPopup(node);
+            openOutputHistoryPopup(node);
+        }
+    } catch (e) {
+        console.debug(`[LLM Chat DB] Failed to load enhancer history from disk: ${e}`);
+    } finally {
+        node._loadingEnhancerHistory = false;
+    }
+}
 
 // ────────────────────────────────────────────────────────────────────────
 // Popup: Open the chat popup modal for a given node
@@ -54,17 +248,24 @@ export function openChatPopup(node) {
         console.debug(`[LLM Chat] Restored popup height: ${savedH}`);
     }
 
-    // ── Camera badge: visible when IMAGE socket is connected OR image uploaded ──
+    // ── Camera badge: visible when IMAGE socket is connected
+    //    OR image uploaded via popup ──
     const cameraBadge = document.createElement("span");
     cameraBadge.className = "llm-popup-camera-badge";
     cameraBadge.textContent = "📷";
     cameraBadge.title = "Image input connected";
-    // Check if IMAGE socket is connected or image was uploaded via popup
+    // Check if IMAGE socket is connected, or image uploaded
     const imageInput = node.inputs?.find(i => i.name === "image");
     const hasWiredImage = imageInput && imageInput.link != null;
     const hasUploadedImage = !!node._uploadedImage;
     cameraBadge.style.display = (hasWiredImage || hasUploadedImage) ? "inline-block" : "none";
-    header.appendChild(cameraBadge);
+    // Insert before the close button so it stays left of ✕
+    let closeBtn = header.querySelector(".llm-popup-close-btn");
+    if (closeBtn) {
+        header.insertBefore(cameraBadge, closeBtn);
+    } else {
+        header.appendChild(cameraBadge);
+    }
 
     // ── Header action buttons (clear, export, stop) ──
     const headerActions = document.createElement("div");
@@ -75,7 +276,7 @@ export function openChatPopup(node) {
     clearBtn.className = "llm-popup-header-btn llm-popup-clear-btn";
     clearBtn.textContent = "🗑 Clear";
     clearBtn.title = "Clear conversation";
-    clearBtn.onclick = () => {
+    clearBtn.onclick = async () => {
         if (confirm("Clear the entire conversation?")) {
             node._chatHistory = [];
             // Also clear any uploaded image (conversation context is gone)
@@ -83,7 +284,18 @@ export function openChatPopup(node) {
                 removeAttachedImage(node);
             }
             renderPopupHistory(node);
-            showToast("Chat cleared", "success", 2000);
+
+            try {
+                const resp = await fetch(`/easyllm/db/history/${node.id}`, { method: "DELETE" });
+                const result = await resp.json();
+                if (result.success) {
+                    showToast("Chat cleared", "success", 2000);
+                } else {
+                    showToast(`Failed to clear on server: ${result.error}`, "error", 3000);
+                }
+            } catch (e) {
+                showToast(`Failed to clear on server: ${e.message}`, "error", 3000);
+            }
         }
     };
     headerActions.appendChild(clearBtn);
@@ -108,7 +320,7 @@ export function openChatPopup(node) {
     headerActions.appendChild(stopBtn);
 
     // Insert header actions before the close button
-    const closeBtn = header.querySelector(".llm-popup-close-btn");
+    closeBtn = header.querySelector(".llm-popup-close-btn");
     if (closeBtn) {
         header.insertBefore(headerActions, closeBtn);
     }
@@ -133,6 +345,65 @@ export function openChatPopup(node) {
     node._popupHistoryEl = historyContainer;
     body.appendChild(historyContainer);
 
+    // ── Lazy pagination: load older entries when scrolling near the top ──
+    historyContainer.addEventListener("scroll", () => {
+        const pag = node._historyPagination;
+        if (!pag || pag.allLoaded || pag.isLoading) return;
+        // User scrolled near the top of the container — load the next page
+        // of older entries (threshold: 80px from top).
+        if (historyContainer.scrollTop < 80) {
+            _loadNextHistoryPage(node);
+        }
+    });
+
+    // ── Drag-and-drop file upload (images + text files) ──
+    const dropZone = document.createElement("div");
+    dropZone.className = "llm-popup-drop-zone";
+    dropZone.textContent = "📎 Drop image or text file";
+    body.appendChild(dropZone);
+    node._popupDropZone = dropZone;
+    node._popupDragCounter = 0;
+
+    // Drag enter (increment counter — fires for children too)
+    body.addEventListener("dragenter", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        node._popupDragCounter++;
+        if (node._popupDragCounter === 1) {
+            body.classList.add("llm-popup-body-dragover");
+        }
+    });
+
+    // Drag over (must prevent default to allow drop)
+    body.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+    });
+
+    // Drag leave (decrement counter — only remove class when all leave)
+    body.addEventListener("dragleave", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        node._popupDragCounter--;
+        if (node._popupDragCounter <= 0) {
+            node._popupDragCounter = 0;
+            body.classList.remove("llm-popup-body-dragover");
+        }
+    });
+
+    // Drop
+    body.addEventListener("drop", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        node._popupDragCounter = 0;
+        body.classList.remove("llm-popup-body-dragover");
+
+        const files = e.dataTransfer?.files;
+        if (files?.length) {
+            handleDroppedFile(node, files[0]);
+        }
+    });
+
     // ── Context indicator ──
     const contextEl = document.createElement("div");
     contextEl.className = "llm-chat-context-indicator";
@@ -143,6 +414,9 @@ export function openChatPopup(node) {
     // Render history (async to let DOM attach)
     requestAnimationFrame(() => {
         renderPopupHistory(node);
+
+        // ── NEW: try loading persisted history from disk (Phase 2) ──
+        _loadHistoryFromDisk(node);
 
         // If streaming was ongoing while popup was closed, pre-fill the
         // assistant bubble with all tokens accumulated so far.
@@ -158,15 +432,15 @@ export function openChatPopup(node) {
     const inputRow = document.createElement("div");
     inputRow.className = "llm-popup-input-row";
 
-    // ── Image attachment button ──
+    // ── File attachment button (image or text) ──
     const attachBtn = document.createElement("button");
     attachBtn.className = "llm-popup-attach-btn";
     attachBtn.textContent = "📎";
-    attachBtn.title = "Attach an image";
+    attachBtn.title = "Attach an image or text file";
     attachBtn.onclick = () => {
         // Disable during active generation
         if (node._popupStreaming) {
-            showToast("Cannot attach image during generation", "warning", 2000);
+            showToast("Cannot attach file during generation", "warning", 2000);
             return;
         }
         openImagePicker(node);
@@ -204,388 +478,74 @@ export function openChatPopup(node) {
     inputRow.appendChild(sendBtn);
     body.appendChild(inputRow);
 
-    // ── Settings section (collapsible) ──
-    const settings = document.createElement("details");
-    settings.className = "llm-popup-settings";
-
-    // Collapsible toggle header
-    const settingsSummary = document.createElement("summary");
-    settingsSummary.className = "llm-popup-settings-header";
-    settingsSummary.textContent = "⚙️ Settings";
-    settings.appendChild(settingsSummary);
-
-    // Restore collapsed state across popup opens
-    if (node._popupSettings?.settingsOpen) {
-        settings.setAttribute("open", "");
-    }
-
-    /**
-     * Create a <select> with preset options, ensuring the current value
-     * is always selectable even if not in the preset list.
-     */
-    function _createPresetDropdown(presets, currentValue, attrs = {}) {
-        const sel = document.createElement("select");
-        sel.className = "llm-popup-settings-select";
-        Object.assign(sel, attrs);
-
-        let matched = false;
-        for (const v of presets) {
-            const opt = document.createElement("option");
-            opt.value = v;
-            opt.textContent = v;
-            if (String(v) === String(currentValue)) {
-                opt.selected = true;
-                matched = true;
-            }
-            sel.appendChild(opt);
-        }
-        // If currentValue doesn't match any preset, add it as a temporary option
-        if (!matched && currentValue !== undefined && currentValue !== null && currentValue !== "") {
-            const opt = document.createElement("option");
-            opt.value = currentValue;
-            opt.textContent = `${currentValue} (custom)`;
-            opt.selected = true;
-            sel.appendChild(opt);
-            console.debug(`[LLM Chat] Added custom dropdown option: ${currentValue}`);
-        }
-        return sel;
-    }
-
-    // Load current settings — read from canvas widgets FIRST (authoritative source),
-    // fall back to _popupSettings (synced via callbacks).
-    const popupSettings = node._popupSettings || {};
-    const tw = node.widgets?.find(w => w.name === "prompt_template");
-    const mlw = node.widgets?.find(w => w.name === "max_length");
-    const tpw = node.widgets?.find(w => w.name === "temperature");
-    const spw = node.widgets?.find(w => w.name === "system_prompt_text");
-
-    const currentTemplate = tw?.value || popupSettings.prompt_template || "Custom";
-    const currentCustomPrompt = spw?.value || popupSettings.system_prompt_text || "";
-    const currentMaxLength = mlw?.value || popupSettings.max_length || 768;
-    const currentTemperature = node.isEasyLLMGGUF
-        ? (tpw?.value ?? popupSettings.temperature ?? 0.7)
-        : (tpw?.value || popupSettings.temperature || "auto");
-
-    // ── Single-column sectioned settings layout ──
-    const settingsSections = document.createElement("div");
-    settingsSections.className = "llm-popup-settings-sections";
-
-    // ════════════════════════════════════════════════════════════════
-    // Section: Persona — Configure the AI's behavior
-    // ════════════════════════════════════════════════════════════════
-    const personaSection = document.createElement("div");
-    personaSection.className = "llm-popup-settings-section";
-
-    const personaHeader = document.createElement("div");
-    personaHeader.className = "llm-popup-settings-section-header";
-    personaHeader.textContent = "Persona";
-    personaSection.appendChild(personaHeader);
-
-    // System Prompt dropdown row
-    const sysPromptRow = document.createElement("div");
-    sysPromptRow.className = "llm-popup-settings-row";
-
-    const sysLabel = document.createElement("span");
-    sysLabel.className = "llm-popup-settings-label";
-    sysLabel.textContent = "System Prompt:";
-    sysPromptRow.appendChild(sysLabel);
-
-    // Fetch prompt names for dropdown
-    const templateWidget = node.widgets?.find(w => w.name === "prompt_template");
-    const templateNames = templateWidget?.options?.values || ["Custom"];
-
-    const templateSelect = document.createElement("select");
-    templateSelect.className = "llm-popup-settings-select";
-    for (const name of templateNames) {
-        const opt = document.createElement("option");
-        opt.value = name;
-        opt.textContent = name;
-        if (name === currentTemplate) opt.selected = true;
-        templateSelect.appendChild(opt);
-    }
-    sysPromptRow.appendChild(templateSelect);
-    personaSection.appendChild(sysPromptRow);
-
-    // Custom prompt textarea (dimmed when template is selected)
-    const customRow = document.createElement("div");
-    customRow.className = "llm-popup-settings-row";
-    customRow.style.flexDirection = "column";
-    customRow.style.alignItems = "stretch";
-
-    const customTextarea = document.createElement("textarea");
-    customTextarea.className = "llm-popup-custom-prompt";
-    customTextarea.placeholder = "Custom system prompt (empty = no system prompt sent to the model)";
-    customTextarea.value = currentCustomPrompt;
-    customTextarea.style.minHeight = "50px";
-    customTextarea.disabled = currentTemplate !== "Custom";
-    customRow.appendChild(customTextarea);
-    personaSection.appendChild(customRow);
-
-    // Dim custom textarea when template selected
-    templateSelect.addEventListener("change", () => {
-        customTextarea.disabled = templateSelect.value !== "Custom";
-    });
-
-    settingsSections.appendChild(personaSection);
-
-    // ════════════════════════════════════════════════════════════════
-    // Section: Tuning — Generation parameters
-    // ════════════════════════════════════════════════════════════════
-    const tuningSection = document.createElement("div");
-    tuningSection.className = "llm-popup-settings-section";
-
-    const tuningHeader = document.createElement("div");
-    tuningHeader.className = "llm-popup-settings-section-header";
-    tuningHeader.textContent = "Tuning";
-    tuningSection.appendChild(tuningHeader);
-
-    // Temperature
-    const tempRow = document.createElement("div");
-    tempRow.className = "llm-popup-settings-row";
-
-    const tempLabel = document.createElement("span");
-    tempLabel.className = "llm-popup-settings-label";
-    tempLabel.textContent = "Temperature:";
-    tempRow.appendChild(tempLabel);
-
-    let tempControl;
-    if (node.isEasyLLMGGUF) {
-        // GGUF: Float slider (0.0–2.0, step 0.1)
-        const tempInput = document.createElement("input");
-        tempInput.type = "number";
-        tempInput.className = "llm-popup-settings-input";
-        tempInput.min = 0.0;
-        tempInput.max = 2.0;
-        tempInput.step = 0.1;
-        tempInput.value = currentTemperature;
-        tempInput.title = "Sampling temperature. 0 = greedy/deterministic.";
-        tempRow.appendChild(tempInput);
-        tempControl = tempInput;
-    } else {
-        // CLIP: Dropdown with presets
-        tempControl = _createPresetDropdown(
-            ["auto", "0.0", "0.3", "0.5", "0.7", "0.9"],
-            currentTemperature,
-            { style: "flex: 0 0 auto" }
-        );
-        tempRow.appendChild(tempControl);
-    }
-    tuningSection.appendChild(tempRow);
-
-    // Max Length
-    const maxRow = document.createElement("div");
-    maxRow.className = "llm-popup-settings-row";
-
-    const maxLabel = document.createElement("span");
-    maxLabel.className = "llm-popup-settings-label";
-    maxLabel.textContent = "Max Length:";
-    maxRow.appendChild(maxLabel);
-
-    const maxSelect = _createPresetDropdown(
-        [64, 128, 256, 384, 512, 768, 1024, 2048, 4096, 8192],
-        currentMaxLength,
-        { style: "flex: 0 0 auto" }
-    );
-    maxRow.appendChild(maxSelect);
-    tuningSection.appendChild(maxRow);
-
-    // Seed
-    const seedWidget = node.widgets?.find(w => w.name === "seed");
-    const currentSeed = seedWidget?.value ?? 0;
-
-    const seedRow = document.createElement("div");
-    seedRow.className = "llm-popup-settings-row";
-
-    const seedLabel = document.createElement("span");
-    seedLabel.className = "llm-popup-settings-label";
-    seedLabel.textContent = "Seed:";
-    seedRow.appendChild(seedLabel);
-
-    const seedInput = document.createElement("input");
-    seedInput.type = "number";
-    seedInput.className = "llm-popup-settings-input";
-    seedInput.value = currentSeed;
-    seedInput.min = 0;
-    seedInput.max = 0xFFFFFFFF;
-    seedInput.title = "0 = auto-randomize";
-    seedRow.appendChild(seedInput);
-    tuningSection.appendChild(seedRow);
-
-    settingsSections.appendChild(tuningSection);
-
-    // ════════════════════════════════════════════════════════════════
-    // Section: Hardware — Advanced system settings
-    // ════════════════════════════════════════════════════════════════
-    const hwDetails = document.createElement("details");
-    hwDetails.className = "llm-popup-settings-section";
-
-    const hwSummary = document.createElement("summary");
-    hwSummary.className = "llm-popup-settings-section-header";
-    hwSummary.textContent = "⚙️ Hardware Settings";
-    hwSummary.style.cursor = "pointer";
-    hwDetails.appendChild(hwSummary);
-
-    const hwContent = document.createElement("div");
-    hwContent.style.cssText = "display: flex; flex-direction: column; gap: 6px; padding: 4px 0;";
-
-    // Helper: add a settings row with label + input element
-    function addHardwareRow(label, inputEl) {
-        const row = document.createElement("div");
-        row.className = "llm-popup-settings-row";
-        const lbl = document.createElement("span");
-        lbl.className = "llm-popup-settings-label";
-        lbl.textContent = label;
-        row.appendChild(lbl);
-        row.appendChild(inputEl);
-        hwContent.appendChild(row);
-    }
-
-    // VRAM Mode (shared: both CLIP and GGUF)
-    const vramWidget = node.widgets?.find(w => w.name === "vram_mode");
-    const vramOptions = vramWidget?.options?.values || ["unload", "keep_loaded", "aggressive_free"];
-    const currentVram = vramWidget?.value || popupSettings.vram_mode || "unload";
-    const vramSelect = document.createElement("select");
-    vramSelect.className = "llm-popup-settings-select";
-    for (const optVal of vramOptions) {
-        const opt = document.createElement("option");
-        opt.value = optVal;
-        opt.textContent = optVal;
-        if (optVal === currentVram) opt.selected = true;
-        vramSelect.appendChild(opt);
-    }
-    node._popupVramSelect = vramSelect;
-    addHardwareRow("VRAM Mode:", vramSelect);
-
-    // use_mlock (shared: both CLIP and GGUF)
-    const mlockWidget = node.widgets?.find(w => w.name === "use_mlock");
-    const mlockRow = document.createElement("div");
-    mlockRow.className = "llm-popup-settings-row";
-    const mlockLabel = document.createElement("span");
-    mlockLabel.className = "llm-popup-settings-label";
-    mlockLabel.textContent = "Use mlock:";
-    mlockRow.appendChild(mlockLabel);
-    const mlockCheckbox = document.createElement("input");
-    mlockCheckbox.type = "checkbox";
-    mlockCheckbox.checked = popupSettings.use_mlock ??
-        mlockWidget?.value ?? (node.isEasyLLMGGUF ? true : false);
-    node._popupMlockCheckbox = mlockCheckbox;
-    mlockRow.appendChild(mlockCheckbox);
-    hwContent.appendChild(mlockRow);
-
-    // ── GGUF-specific hardware fields ──
-    // NOTE: model_path and mmproj_path are managed via the model browser popup.
-    if (node.isEasyLLMGGUF) {
-        // n_gpu_layers
-        const nGpuInput = document.createElement("input");
-        nGpuInput.type = "number";
-        nGpuInput.className = "llm-popup-settings-input";
-        nGpuInput.min = -1;
-        nGpuInput.max = 200;
-        nGpuInput.step = 1;
-        nGpuInput.value = popupSettings.n_gpu_layers ??
-            node.widgets?.find(w => w.name === "n_gpu_layers")?.value ?? -1;
-        nGpuInput.title = "-1 = all layers on GPU. 0 = CPU only.";
-        node._popupNGpuInput = nGpuInput;
-        addHardwareRow("GPU Layers:", nGpuInput);
-
-        // n_ctx
-        const nCtxInput = document.createElement("input");
-        nCtxInput.type = "number";
-        nCtxInput.className = "llm-popup-settings-input";
-        nCtxInput.min = 512;
-        nCtxInput.max = 32768;
-        nCtxInput.step = 512;
-        nCtxInput.value = popupSettings.n_ctx ??
-            node.widgets?.find(w => w.name === "n_ctx")?.value ?? 4096;
-        nCtxInput.title = "Context window size (max tokens the model can remember).";
-        node._popupNCtxInput = nCtxInput;
-        addHardwareRow("Context Size:", nCtxInput);
-
-        // ── Friendly labels for chat template options ────────────────
-        const CT_LABELS = {
-            "auto": "Auto-detect (Recommended)",
-            "qwen": "Qwen / ChatML",
-            "llama": "Llama 3 / 3.1",
-            "mistral": "Mistral",
-            "phi": "Phi-3 / Phi-4",
-            "deepseek": "DeepSeek",
-            "gemma": "Gemma",
-        };
-        // chat_template
-        const ctWidget = node.widgets?.find(w => w.name === "chat_template");
-        const ctNames = ctWidget?.options?.values || ["auto", "qwen", "llama", "mistral", "phi", "deepseek", "gemma"];
-        const ctSelect = document.createElement("select");
-        ctSelect.className = "llm-popup-settings-select";
-        const savedCT = popupSettings.chat_template ||
-            node.widgets?.find(w => w.name === "chat_template")?.value || "auto";
-        for (const name of ctNames) {
-            const opt = document.createElement("option");
-            opt.value = name;
-            opt.textContent = CT_LABELS[name] || name;
-            if (name === savedCT) opt.selected = true;
-            ctSelect.appendChild(opt);
-        }
-        node._popupCTSelect = ctSelect;
-        addHardwareRow("Chat Template:", ctSelect);
-
-        // top_k
-        const topKInput = document.createElement("input");
-        topKInput.type = "number";
-        topKInput.className = "llm-popup-settings-input";
-        topKInput.min = 1;
-        topKInput.max = 100;
-        topKInput.step = 1;
-        topKInput.value = popupSettings.top_k ??
-            node.widgets?.find(w => w.name === "top_k")?.value ?? 50;
-        node._popupTopKInput = topKInput;
-        addHardwareRow("Top-K:", topKInput);
-
-        // top_p
-        const topPInput = document.createElement("input");
-        topPInput.type = "number";
-        topPInput.className = "llm-popup-settings-input";
-        topPInput.min = 0.0;
-        topPInput.max = 1.0;
-        topPInput.step = 0.05;
-        topPInput.value = popupSettings.top_p ??
-            node.widgets?.find(w => w.name === "top_p")?.value ?? 0.9;
-        node._popupTopPInput = topPInput;
-        addHardwareRow("Top-P:", topPInput);
-
-        // repetition_penalty
-        const repWidget = node.widgets?.find(w => w.name === "repetition_penalty");
-        const repInput = document.createElement("input");
-        repInput.type = "number";
-        repInput.className = "llm-popup-settings-input";
-        repInput.min = 0.0;
-        repInput.max = 2.0;
-        repInput.step = 0.05;
-        repInput.value = popupSettings.repetition_penalty ??
-            repWidget?.value ?? 1.0;
-        repInput.title = "Repetition penalty. 1.0 = no penalty.";
-        node._popupRepPenaltyInput = repInput;
-        addHardwareRow("Rep. Penalty:", repInput);
-    }
-
-    hwDetails.appendChild(hwContent);
-    settingsSections.appendChild(hwDetails);
-
-    // Store popup DOM references for syncPopupSettingsToCanvas
-    node._popupTemplateSelect = templateSelect;
-    node._popupCustomTextarea = customTextarea;
-    node._popupMaxSelect = maxSelect;
-    node._popupTempSelect = tempControl;
-    node._popupSeedInput = seedInput;
-
-    settings.appendChild(settingsSections);
-    body.appendChild(settings);
-
-    // ── Footer (Manage Prompts + Models + Export + Save & Close) ──
+    // ── Footer (Prompt Library + System Prompt Dropdown + Models + Export + Save & Close) ──
     const manageBtn = document.createElement("button");
     manageBtn.className = "llm-popup-manage-btn";
-    manageBtn.textContent = "⚙ Manage Prompts...";
+    manageBtn.textContent = "📚 Prompt Library";
     manageBtn.onclick = () => openPromptManagerDialog();
     footer.appendChild(manageBtn);
+
+    // ── System Prompt Dropdown (only when no chained system prompt is connected) ──
+    const sysPromptInput = node.inputs?.find(i => i.name === "system_prompt");
+    const hasChainedSystemPrompt = sysPromptInput && sysPromptInput.link != null;
+
+    if (!hasChainedSystemPrompt) {
+        const sysPromptSelect = document.createElement("select");
+        sysPromptSelect.className = "llm-popup-sysprompt-select";
+        sysPromptSelect.title = "Select a system prompt from the library";
+
+        // Default "none" option
+        const defaultOpt = document.createElement("option");
+        defaultOpt.value = "";
+        defaultOpt.textContent = "— No System Prompt —";
+        sysPromptSelect.appendChild(defaultOpt);
+
+        // Populate dropdown from prompt library; refreshes on "llm-prompts-updated" event
+        async function refreshSystemPromptDropdown() {
+            // Read the persisted selection FIRST (before async fetch can race with it)
+            const currentValue = node._popupSystemPrompt || sysPromptSelect.value;
+            // Clear all options except the default
+            while (sysPromptSelect.options.length > 1) {
+                sysPromptSelect.remove(1);
+            }
+            try {
+                const { prompts } = await fetchPrompts();
+                // Deduplicate by name
+                const seen = new Set();
+                for (const p of prompts) {
+                    if (!p.name || seen.has(p.name)) continue;
+                    seen.add(p.name);
+                    const opt = document.createElement("option");
+                    opt.value = p.prompt;
+                    opt.textContent = `${p.name} (${p.category || "General"})`;
+                    sysPromptSelect.appendChild(opt);
+                }
+            } catch (_e) {
+                console.debug("[LLM Chat] Failed to load prompts for dropdown:", _e);
+            }
+            // Restore selection if the value still exists; otherwise keep default
+            sysPromptSelect.value = currentValue;
+            node._popupSystemPrompt = sysPromptSelect.value;
+        }
+
+        // Initial population (restoration handled inside the function via currentValue)
+        refreshSystemPromptDropdown();
+
+        sysPromptSelect.onchange = () => {
+            node._popupSystemPrompt = sysPromptSelect.value;
+        };
+
+        // Listen for prompt library updates (from api.js after save/import/delete)
+        const promptsUpdatedHandler = () => {
+            if (sysPromptSelect.isConnected) {
+                refreshSystemPromptDropdown();
+            }
+        };
+        document.addEventListener("llm-prompts-updated", promptsUpdatedHandler);
+        node._promptsUpdatedHandler = promptsUpdatedHandler;
+
+        footer.appendChild(sysPromptSelect);
+    }
 
     // 📁 Models button (GGUF-only — opens model browser popup)
     if (node.isEasyLLMGGUF) {
@@ -654,24 +614,16 @@ export function openChatPopup(node) {
 
     const saveBtn = document.createElement("button");
     saveBtn.className = "llm-popup-save-btn";
-    saveBtn.textContent = "💾 Save & Close";
+    saveBtn.textContent = "✕ Close";
     saveBtn.onclick = () => {
-        // Sync settings to canvas FIRST (replaces _popupSettings — capture dims after).
-        syncPopupSettingsToCanvas(node);
-
-        // Capture popup panel dimensions after sync. Uses offsetWidth/offsetHeight
-        // because CSS resize:both may not reflect in element.style.
+        // Capture popup panel dimensions for persistence
         if (node._popupPanel) {
             const w = node._popupPanel.offsetWidth;
             const h = node._popupPanel.offsetHeight;
+            if (!node._popupSettings) node._popupSettings = {};
             node._popupSettings.popupWidth = w + "px";
             node._popupSettings.popupHeight = h + "px";
-            console.debug(`[LLM Chat] Saved popup dimensions: ${w}x${h}`);
-        } else {
-            console.debug(`[LLM Chat] saveBtn.onclick: node._popupPanel is null`);
         }
-        // Persist settings collapsed state
-        node._popupSettings.settingsOpen = settings.hasAttribute("open");
         closeChatPopup(node);
     };
     footer.appendChild(saveBtn);
@@ -687,13 +639,29 @@ export function openChatPopup(node) {
             if (node._chatHistory && node._chatHistory.length > 0) {
                 e.preventDefault();
                 if (confirm("Clear the entire conversation?")) {
-                    node._chatHistory = [];
-                    // Also clear any uploaded image (conversation context is gone)
-                    if (node._uploadedImage) {
-                        removeAttachedImage(node);
-                    }
-                    renderPopupHistory(node);
-                    showToast("Chat cleared", "success", 2000);
+                    // ── Server-first clear (DELETE on server, then clear cache) ──
+                    (async () => {
+                        try {
+                            const resp = await fetch(`/easyllm/db/history/${node.id}?type=chat`, {
+                                method: "DELETE",
+                            });
+                            if (!resp.ok) {
+                                console.warn("[LLM Chat DB] Server DELETE returned non-ok:", resp.status);
+                                showToast("Server delete failed, cleared locally only", "warning", 3000);
+                            }
+                        } catch (_err) {
+                            console.warn("[LLM Chat DB] Server DELETE failed:", _err);
+                            showToast("Server delete failed, cleared locally only", "warning", 3000);
+                        }
+                        // Always clear local cache regardless of server result (best-effort)
+                        node._chatHistory = [];
+                        // Also clear any uploaded image (conversation context is gone)
+                        if (node._uploadedImage) {
+                            removeAttachedImage(node);
+                        }
+                        renderPopupHistory(node);
+                        showToast("Chat cleared", "success", 2000);
+                    })();
                 }
             }
         }
@@ -715,6 +683,19 @@ export function openChatPopup(node) {
 // ────────────────────────────────────────────────────────────────────────
 
 export async function closeChatPopup(node) {
+    // ── If history was lazily loaded (paginated), load remaining
+    //    entries first so the in-memory cache is complete ──
+    if (node._historyPagination && !node._historyPagination.allLoaded) {
+        await _loadRemainingHistory(node);
+    }
+
+    // NOTE: No explicit persist-to-disk is needed here.
+    // Every entry was already persisted incrementally during creation:
+    //   - User messages: handlePopupSend() calls /append
+    //   - Assistant messages: WebSocket done handler calls /append
+    //   - Enhancer entries: onExecuted() calls /append
+    // See: plans/server-db-cleanup-remaining-code.md
+
     // Remove global keyboard handler
     if (node._popupKeyHandler) {
         document.removeEventListener("keydown", node._popupKeyHandler);
@@ -738,6 +719,12 @@ export async function closeChatPopup(node) {
     // Close model browser popup if open
     closeModelBrowserPopup(node);
 
+    // Remove prompts-updated listener
+    if (node._promptsUpdatedHandler) {
+        document.removeEventListener("llm-prompts-updated", node._promptsUpdatedHandler);
+        node._promptsUpdatedHandler = null;
+    }
+
     if (node._popupOverlay && node._popupOverlay.parentElement) {
         node._popupOverlay.parentElement.removeChild(node._popupOverlay);
     }
@@ -753,6 +740,8 @@ export async function closeChatPopup(node) {
     node._popupSendBtn = null;
     node._popupAttachBtn = null;
     node._popupImagePreview = null;
+    node._popupDropZone = null;
+    node._popupDragCounter = null;
     if (getActivePopupNode() === node) {
         clearActivePopupNode();
     }
@@ -843,10 +832,10 @@ function updateEnhancerContextIndicator(node) {
  * Open a read-only output history popup for enhancer mode.
  * Shows input/output pairs with scroll, progress bar, export, and stop controls.
  */
-export function openOutputHistoryPopup(node) {
+export async function openOutputHistoryPopup(node) {
     if (node._popupOverlay) return; // Already open
     if (getActivePopupNode() && getActivePopupNode() !== node) {
-        closeChatPopup(getActivePopupNode());
+        await closeChatPopup(getActivePopupNode());
     }
 
     const nodeLabel = node.title || `Node #${node.id}`;
@@ -907,69 +896,108 @@ export function openOutputHistoryPopup(node) {
     body.appendChild(historyContainer);
 
     const history = node._enhancerHistory || [];
+
+    // ── Selection state (hoisted for updateFooterState) ──
+    const selectedEntries = new Set();
+
     if (history.length === 0) {
         const empty = document.createElement("div");
         empty.className = "llm-popup-history-empty";
         empty.textContent = "🔍 Queue Prompt to generate enhanced prompts. Results appear here.";
         historyContainer.appendChild(empty);
     } else {
-        // Scroll-to-bottom button
-        createScrollToBottomBtn(historyContainer);
+        /**
+         * Estimate token count for a single enhancer entry.
+         * @param {Object} entry
+         * @returns {number} Estimated token count
+         */
+        function estimateEntryTokens(entry) {
+            try {
+                const normalized = [
+                    { message: entry.input, role: "user" },
+                    { message: entry.output, role: "assistant" },
+                ];
+                let systemPrompt = entry.systemPromptText || "";
+                const result = estimateContextTokens(normalized, {
+                    systemPrompt,
+                    chatTemplate: "llama",
+                    countImages: false,
+                });
+                return result.total || 0;
+            } catch {
+                return 0;
+            }
+        }
 
-        // Scroll event handler (tracks user scroll-up state)
-        historyContainer.addEventListener("scroll", () => {
-            updateScrollState(historyContainer);
-        });
+        // Paste-to-input handler
+        const pasteToInputHandler = (text) => {
+            const textW = node.widgets?.find(w => w.name === "text");
+            if (textW) {
+                textW.value = text;
+                showToast("✏️ Pasted to text widget", "info", 2000);
+            }
+        };
 
         // Show oldest entries first (chronological order), with newest at bottom
         for (const entry of history) {
-            // Build extra elements for the input bubble:
-            // collapsible system prompt snapshot (if available)
-            const extraElements = [];
-            if (entry.systemPromptText) {
-                const details = document.createElement("details");
-                details.className = "llm-chat-system-prompt-details";
-                const summary = document.createElement("summary");
-                summary.className = "llm-chat-system-prompt-summary";
-                summary.textContent = "📜 System prompt";
-                details.appendChild(summary);
-                const content = document.createElement("div");
-                content.className = "llm-chat-system-prompt-content";
-                content.textContent = entry.systemPromptText;
-                details.appendChild(content);
-                extraElements.push(details);
-            }
+            const tokenCount = estimateEntryTokens(entry);
 
-            // Input bubble with copy button + paste-to-input
-            const inputBubble = createBubbleElement("user", `Input: ${entry.input}`, {
-                onPasteToInput: (text) => {
-                    // Strip "Input: " prefix for paste
-                    const cleanText = text.startsWith("Input: ") ? text.slice(7) : text;
-                    const textW = node.widgets?.find(w => w.name === "text");
-                    if (textW) {
-                        textW.value = cleanText;
-                        showToast("✏️ Pasted to text widget", "info", 2000);
+            const card = createEnhancerCardElement(entry, {
+                isSelected: selectedEntries.has(entry),
+                tokenCount,
+                onPasteToInput: pasteToInputHandler,
+                onSelect: (ent, isSelected) => {
+                    if (isSelected) {
+                        selectedEntries.add(ent);
+                    } else {
+                        selectedEntries.delete(ent);
                     }
+                    updateFooterState();
                 },
-                extraElements: extraElements,
+                onEdit: function saveOnEdit(newText) {
+                    // 1. Update in-memory entry
+                    entry.output = newText;
+                    // 2. In-place DOM update on the card element (no full re-render)
+                    const outputTextEl = card.querySelector(".enhancer-card-output-text");
+                    if (outputTextEl) {
+                        const parsed = parseThinkBlocks(newText);
+                        const displayText2 = parsed.response || newText;
+                        const attachParsed2 = parseAttachedTextBlocks(displayText2);
+                        outputTextEl.innerHTML = renderMarkdown(attachParsed2.displayText);
+                    }
+                    // Restore action buttons (edit + copy) via shared helper
+                    const outputContainer = card.querySelector(".enhancer-card-output");
+                    if (outputContainer) {
+                        rebuildEnhancerActions(outputContainer, entry, { onEdit: saveOnEdit }, newText);
+                    }
+                    // 3. Persist to disk via incremental update (not full-replace)
+                    const enhancerIndex = node._enhancerHistory.indexOf(entry);
+                    if (enhancerIndex >= 0) {
+                        fetch(`/easyllm/db/history/${node.id}/entry`, {
+                            method: "PUT",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                index: enhancerIndex,
+                                entry: entry,
+                                type: "enhancer",
+                            }),
+                        }).catch(() => {});
+                    }
+                    // 4. Show feedback
+                    showToast("✅ Output updated", "success", 2000);
+                },
             });
-            historyContainer.appendChild(inputBubble);
-
-            // Output bubble with copy button + timestamp + model name badge
-            const outputBubble = createBubbleElement("assistant", entry.output, {
-                timestamp: entry.timestamp,
-                modelName: entry.modelName,
-            });
-            historyContainer.appendChild(outputBubble);
+            historyContainer.appendChild(card);
         }
 
-        // Initial scroll to bottom
+        // Initial scroll to bottom (instant, no smooth animation — ensures
+        // the <summary>📋 Details</summary> of the last card is fully visible)
         requestAnimationFrame(() => {
-            scrollToBottom(historyContainer);
+            autoScrollIfNeeded(historyContainer);
         });
     }
 
-    // ── Context indicator (below history, above footer) ──
+    // ── Context indicator (below history) ──
     const contextEl = document.createElement("div");
     contextEl.className = "llm-chat-context-indicator";
     contextEl.style.display = "none";
@@ -981,84 +1009,206 @@ export function openOutputHistoryPopup(node) {
         updateEnhancerContextIndicator(node);
     });
 
-    // ── Footer (Clear History + Models + Export) ──
-    const clearBtn = document.createElement("button");
-    clearBtn.className = "llm-popup-copy-btn";
-    clearBtn.textContent = "🗑 Clear History";
-    clearBtn.onclick = () => {
-        node._enhancerHistory = [];
+    // ── Footer (enhancer-card-footer bar) ──
+    const footerBar = document.createElement("div");
+    footerBar.className = "enhancer-card-footer";
+
+    // Function to update footer button states based on selection
+    function updateFooterState() {
+        const count = selectedEntries.size;
+        const total = history.length;
+
+        // Update select all button text
+        if (count === total && total > 0) {
+            selectAllBtn.textContent = "❌ Deselect All";
+        } else {
+            selectAllBtn.textContent = "✅ Select All";
+        }
+
+        // Update export selected button
+        if (count > 0) {
+            exportSelectedBtn.textContent = `📥 Export Selected (${count})`;
+            exportSelectedBtn.disabled = false;
+        } else {
+            exportSelectedBtn.textContent = "📥 Export Selected";
+            exportSelectedBtn.disabled = true;
+        }
+
+        // Update selection count label
+        if (count > 0) {
+            selectionLabel.textContent = `${count} of ${total} selected`;
+            selectionLabel.style.display = "block";
+        } else {
+            selectionLabel.textContent = "";
+            selectionLabel.style.display = "none";
+        }
+
+        // Update remove button text based on selection
+        if (count > 0) {
+            removeAllBtn.textContent = `🗑 Remove Selected (${count})`;
+            removeAllBtn.title = "Remove selected enhancer history entries";
+        } else {
+            removeAllBtn.textContent = "🗑 Remove All";
+            removeAllBtn.title = "Clear all enhancer history";
+        }
+    }
+
+    // Select All / Deselect All button
+    const selectAllBtn = document.createElement("button");
+    selectAllBtn.className = "enhancer-card-footer-btn";
+    selectAllBtn.textContent = "✅ Select All";
+    selectAllBtn.title = "Toggle selection of all entries";
+    selectAllBtn.onclick = () => {
+        const allSelected = selectedEntries.size === history.length;
+        const cards = historyContainer.querySelectorAll(".enhancer-card");
+        cards.forEach((card, idx) => {
+            const entry = history[idx];
+            if (allSelected) {
+                card.classList.remove("enhancer-card-selected");
+                selectedEntries.delete(entry);
+            } else {
+                card.classList.add("enhancer-card-selected");
+                selectedEntries.add(entry);
+            }
+        });
+        updateFooterState();
+    };
+    footerBar.appendChild(selectAllBtn);
+
+    // Export Selected button — opens enhanced export dialog
+    const exportSelectedBtn = document.createElement("button");
+    exportSelectedBtn.className = "enhancer-card-footer-btn";
+    exportSelectedBtn.textContent = "📥 Export Selected";
+    exportSelectedBtn.title = "Export selected entries with options";
+    exportSelectedBtn.disabled = true;
+    exportSelectedBtn.onclick = () => {
+        openEnhancerExportDialog(node, selectedEntries, nodeLabel);
+    };
+    footerBar.appendChild(exportSelectedBtn);
+
+    // Selection count label (right-aligned)
+    const selectionLabel = document.createElement("span");
+    selectionLabel.className = "enhancer-card-footer-label";
+    selectionLabel.style.display = "none";
+    footerBar.appendChild(selectionLabel);
+
+    // Remove button (danger style — matches Reset All from model browser)
+    const removeAllBtn = document.createElement("button");
+    removeAllBtn.className = "llm-model-browser-btn-danger";
+    removeAllBtn.textContent = "🗑 Remove All";
+    removeAllBtn.title = "Clear all enhancer history";
+    removeAllBtn.onclick = async () => {
+        const count = selectedEntries.size;
+        if (count > 0) {
+            // Remove selected entries only
+            if (!confirm(`🗑 Remove ${count} selected enhancer history entr${count === 1 ? "y" : "ies"}?`)) return;
+            node._enhancerHistory = history.filter(entry => !selectedEntries.has(entry));
+        } else {
+            // Remove all entries
+            if (!confirm("🗑 Are you sure you want to remove all enhancer history entries?")) return;
+            node._enhancerHistory = [];
+        }
+        // Persist remaining entries to disk (overwrite with filtered list)
+        try {
+            if (node._enhancerHistory.length === 0) {
+                // All entries removed — use DELETE endpoint which calls clear_history()
+                const resp = await fetch(`/easyllm/db/history/${node.id}?type=enhancer`, {
+                    method: "DELETE",
+                });
+                const result = await resp.json();
+                if (!result.success) {
+                    showToast(`Failed to persist on server: ${result.error || "Unknown error"}`, "error", 3000);
+                }
+            } else {
+                const resp = await fetch(`/easyllm/db/history/${node.id}`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ entries: node._enhancerHistory, type: "enhancer" }),
+                });
+                const result = await resp.json();
+                if (!result.success) {
+                    showToast(`Failed to persist on server: ${result.error || "Unknown error"}`, "error", 3000);
+                }
+            }
+        } catch (e) {
+            showToast(`Failed to persist on server: ${e.message}`, "error", 3000);
+        }
+        // Re-open popup to reflect changes
         if (node._popupOverlay) {
-            closeChatPopup(node);
-            // Re-open with empty state
+            await closeChatPopup(node);
             openOutputHistoryPopup(node);
         }
     };
-    footer.appendChild(clearBtn);
+    footerBar.appendChild(removeAllBtn);
 
-    // 📁 Models button (GGUF-only — opens model browser popup)
-    if (node.isEasyLLMGGUF) {
-        const modelBtn = document.createElement("button");
-        modelBtn.className = "llm-popup-header-btn";
-        modelBtn.style.marginLeft = "auto";
-        modelBtn.textContent = "📁 Models";
-        modelBtn.title = "Browse and select GGUF model";
-        modelBtn.onclick = () => openModelBrowserPopup(node);
-        footer.appendChild(modelBtn);
-    }
+    footer.appendChild(footerBar);
 
-    // 📥 Export button with dropdown
-    const exportBtn = document.createElement("button");
-    exportBtn.className = "llm-popup-header-btn llm-popup-export-btn llm-popup-export-btn--footer";
-    if (!node.isEasyLLMGGUF) {
-        exportBtn.style.marginLeft = "auto";
-    }
-    exportBtn.textContent = "📥 Export";
-    exportBtn.title = "Export enhancer history";
-    exportBtn.onclick = (e) => {
-        e.stopPropagation();
-        const existing = exportBtn.querySelector(".llm-popup-export-dropdown");
-        if (existing) { existing.remove(); return; }
-        const dropdown = document.createElement("div");
-        dropdown.className = "llm-popup-export-dropdown";
-        dropdown.onclick = (ev) => ev.stopPropagation();
-
-        const mdOption = document.createElement("button");
-        mdOption.textContent = "Markdown (.md)";
-        mdOption.onclick = () => {
-            const result = exportEnhancerHistory(node._enhancerHistory, "md", nodeLabel);
-            if (result) {
-                downloadExport(result);
-                showToast("✅ Exported as Markdown", "success", 2000);
-            } else {
-                showToast("No history to export", "error", 2000);
-            }
-            dropdown.remove();
-        };
-        dropdown.appendChild(mdOption);
-
-        const txtOption = document.createElement("button");
-        txtOption.textContent = "Plain Text (.txt)";
-        txtOption.onclick = () => {
-            const result = exportEnhancerHistory(node._enhancerHistory, "txt", nodeLabel);
-            if (result) {
-                downloadExport(result);
-                showToast("✅ Exported as Plain Text", "success", 2000);
-            } else {
-                showToast("No history to export", "error", 2000);
-            }
-            dropdown.remove();
-        };
-        dropdown.appendChild(txtOption);
-
-        exportBtn.appendChild(dropdown);
-        setTimeout(() => {
-            document.addEventListener("click", () => { if (dropdown.parentNode) dropdown.remove(); }, { once: true });
-        }, 0);
-    };
-    footer.appendChild(exportBtn);
+    // ── Phase 3: Fire-and-forget load enhancer history from DB ──
+    // This will update _enhancerHistory and re-render if disk has more data.
+    _loadEnhancerHistoryFromDisk(node);
 
     // Store references and append
     node._popupOverlay = overlay;
     setActivePopupNode(node);
     document.body.appendChild(overlay);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Settings-Only Popup (accessed via gear icon on canvas)
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * Open a lightweight popup showing only settings. Used by the gear icon button.
+ * @param {object} node — The LiteGraph node
+ */
+export function openSettingsPopup(node) {
+    if (node._settingsPopupOverlay) return;
+
+    const nodeLabel = node.title || `Node #${node.id}`;
+    const { overlay, panel, body, header, footer } = createOverlayModal(
+        "llm-settings-popup",
+        `⚙️ Settings | ${nodeLabel}`,
+        () => closeSettingsPopup(node),
+        { hasFooter: true }
+    );
+
+    node._settingsPopupOverlay = overlay;
+
+    const settingsPanel = createSettingsPanel(node, {
+        showHeader: false,       // No extra header inside the popup
+        showApplyButton: false,  // We have our own Apply & Close button
+        compact: false,
+    });
+    body.appendChild(settingsPanel);
+
+    // Footer: Apply & Close button
+    const applyBtn = document.createElement("button");
+    applyBtn.className = "llm-popup-save-btn";
+    applyBtn.textContent = "✅ Apply & Close";
+    applyBtn.style.width = "100%";
+    applyBtn.onclick = () => {
+        syncPopupSettingsToCanvas(node);
+        closeSettingsPopup(node);
+        showToast("Settings applied", "success", 1500);
+    };
+    footer?.appendChild(applyBtn);
+
+    // Also sync settings on close via overlay close
+    overlay._onClose = () => syncPopupSettingsToCanvas(node);
+
+    document.body.appendChild(overlay);
+}
+
+/**
+ * Close the settings-only popup.
+ * @param {object} node — The LiteGraph node
+ */
+export function closeSettingsPopup(node) {
+    if (node._settingsPopupOverlay) {
+        if (node._settingsPopupOverlay._onClose) {
+            node._settingsPopupOverlay._onClose();
+        }
+        node._settingsPopupOverlay.remove();
+        node._settingsPopupOverlay = null;
+    }
 }

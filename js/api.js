@@ -1,13 +1,36 @@
 /**
- * EasyLLM — API layer: load/save prompts and refresh template widgets
+ * EasyLLM — API layer: load/save prompts
+ *
+ * v3: flat prompts model
+ *   fetchPrompts() returns { categories, prompts }
  */
 
 import { app } from "../../../scripts/app.js";
 
 // ────────────────────────────────────────────────────────────────────────
-// API: Load prompts from the backend
+// Event helper: notify listeners when the prompt library changes
 // ────────────────────────────────────────────────────────────────────────
 
+/**
+ * Dispatch a custom event to notify listeners that the prompt library
+ * has changed (save, import, delete, category rename, etc.).
+ * The system prompt dropdown in the chat popup listens for this event
+ * to refresh its options.
+ */
+function notifyPromptsUpdated() {
+    document.dispatchEvent(new CustomEvent("llm-prompts-updated"));
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// API: Load prompts from the backend (v3 structure)
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch the full prompt structure from the backend.
+ *
+ * @returns {Object} { categories: string[], prompts: array }
+ *                    Returns empty structure on failure.
+ */
 export async function fetchPrompts() {
     try {
         const resp = await fetch("/easyllm/prompts/load");
@@ -17,26 +40,38 @@ export async function fetchPrompts() {
                 `[LLM Chat] Load prompts HTTP ${resp.status}:`,
                 (text || "(empty)").slice(0, 300)
             );
-            return [];
+            return { categories: ["System Prompts"], prompts: [] };
         }
         const data = await resp.json();
-        return data.success ? data.prompts : [];
+        if (data.success) {
+            return {
+                categories: data.categories || ["System Prompts"],
+                prompts: data.prompts || [],
+            };
+        }
+        return { categories: ["System Prompts"], prompts: [] };
     } catch (e) {
         console.error("[LLM Chat] Failed to load prompts:", e);
-        return [];
+        return { categories: ["System Prompts"], prompts: [] };
     }
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// API: Save prompts to the backend
+// API: Save prompts to the backend (v3 structure)
 // ────────────────────────────────────────────────────────────────────────
 
-export async function savePromptsToBackend(prompts) {
+/**
+ * Save the full v3 prompt structure to the backend.
+ *
+ * @param {Object} struct - { categories, prompts }
+ * @returns {Object|null} The parsed response object, or null on failure
+ */
+export async function savePromptsToBackend(struct) {
     try {
         const resp = await fetch("/easyllm/prompts/save", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prompts }),
+            body: JSON.stringify(struct),
         });
         if (!resp.ok) {
             const text = await resp.text();
@@ -44,35 +79,17 @@ export async function savePromptsToBackend(prompts) {
                 `[LLM Chat] Save prompts HTTP ${resp.status}:`,
                 (text || "(empty)").slice(0, 300)
             );
-            return false;
+            return null;
         }
-        const data = await resp.json();
-        return data.success;
+        const result = await resp.json();
+        if (result && result.success !== false) {
+            notifyPromptsUpdated();
+        }
+        return result;
     } catch (e) {
         console.error("[LLM Chat] Failed to save prompts:", e);
-        return false;
+        return null;
     }
-}
-
-// ────────────────────────────────────────────────────────────────────────
-// Global: Refresh prompt_template dropdowns on ALL nodes in the graph
-// ────────────────────────────────────────────────────────────────────────
-
-export function refreshAllTemplateWidgets(prompts) {
-    const names = ["Custom", ...prompts.map(p => p.name)];
-
-    if (!app.graph) return;
-    for (const node of app.graph._nodes) {
-        const tw = node.widgets?.find(w => w.name === "prompt_template");
-        if (tw) {
-            const currentVal = tw.value;
-            tw.options.values = names;
-            if (!names.includes(currentVal)) {
-                tw.value = "Custom";
-            }
-        }
-    }
-    app.graph.setDirtyCanvas(true, false);
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -82,12 +99,17 @@ export function refreshAllTemplateWidgets(prompts) {
 /**
  * Import prompts from a JSON file.
  *
- * Reads the file, validates the format ({ prompts: [...] } or [...]),
- * then POSTs to the backend with the chosen merge strategy.
+ * Reads the file, validates the format, then POSTs to the backend
+ * with the chosen merge strategy.
+ *
+ * Supports formats:
+ *   - { prompts: [...] }   (standard, category optional)
+ *   - [...]                 (flat array)
+ *   - { categories: [...], prompts: [...] }  (full export format)
  *
  * @param {File} file - The .json file selected by the user
  * @param {"append"|"replace"|"skip_duplicates"} strategy - Merge strategy
- * @returns {Object|null} { success, prompts, imported_count, skipped_count } or null on failure
+ * @returns {Object|null} Response with { success, categories, prompts, imported_count, skipped_count }
  */
 export async function importPromptsFromFile(file, strategy = "append") {
     try {
@@ -100,7 +122,7 @@ export async function importPromptsFromFile(file, strategy = "append") {
             return null;
         }
 
-        // Support both { prompts: [...] } and [...] array formats
+        // Support both { prompts: [...] }, [...] array, and { categories: [...], prompts: [...] } formats
         let importedPrompts;
         if (Array.isArray(data)) {
             importedPrompts = data;
@@ -134,9 +156,156 @@ export async function importPromptsFromFile(file, strategy = "append") {
         }
 
         const result = await resp.json();
+        if (result && result.success !== false) {
+            notifyPromptsUpdated();
+        }
         return result;
     } catch (e) {
         console.error("[LLM Chat] Failed to import prompts:", e);
+        return null;
+    }
+}
+
+/**
+ * Import multiple .txt / .md files as prompts in a chosen category.
+ *
+ * Reads each file's text content client-side, strips the file extension
+ * to derive the prompt name, then POSTs to the existing
+ * /easyllm/prompts/import endpoint with strategy="append".
+ *
+ * @param {File[]} files - Selected .txt / .md File objects
+ * @param {string} category - Target category (default: "Favorites")
+ * @returns {Object|null} { success, categories, prompts, imported_count, skipped_count }
+ */
+export async function importTextFilesAsPrompts(files, category = "Favorites") {
+    try {
+        const prompts = [];
+        for (const file of files) {
+            const text = await file.text();
+            // Strip last extension to derive prompt name from filename
+            const name = file.name.replace(/\.[^.]+$/, "");
+            prompts.push({ name, prompt: text, category });
+        }
+
+        if (prompts.length === 0) {
+            console.error("[LLM Chat] Import files: no files provided");
+            return null;
+        }
+
+        const resp = await fetch("/easyllm/prompts/import", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompts, strategy: "append" }),
+        });
+
+        if (!resp.ok) {
+            const errText = await resp.text();
+            console.error(
+                `[LLM Chat] Import files HTTP ${resp.status}:`,
+                (errText || "(empty)").slice(0, 300)
+            );
+            return null;
+        }
+
+        const result = await resp.json();
+        if (result && result.success !== false) {
+            notifyPromptsUpdated();
+        }
+        return result;
+    } catch (e) {
+        console.error("[LLM Chat] Failed to import text files:", e);
+        return null;
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// API: Category CRUD
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * Save updated categories list (after add/rename/reorder/delete).
+ *
+ * @param {string[]} categories - Ordered list of category names
+ * @returns {Object|null} Response with { success, categories, prompts }
+ */
+export async function saveCategories(categories) {
+    try {
+        const resp = await fetch("/easyllm/prompts/categories/save", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ categories }),
+        });
+        if (!resp.ok) {
+            const text = await resp.text();
+            console.error(`[LLM Chat] Save categories HTTP ${resp.status}:`, (text || "").slice(0, 300));
+            return null;
+        }
+        const result = await resp.json();
+        if (result && result.success !== false) {
+            notifyPromptsUpdated();
+        }
+        return result;
+    } catch (e) {
+        console.error("[LLM Chat] Failed to save categories:", e);
+        return null;
+    }
+}
+
+/**
+ * Delete a category, reassigning its prompts to another category.
+ *
+ * @param {string} category - The category name to delete
+ * @param {string} reassignTo - Target category for reassignment (default: "Favorites")
+ * @returns {Object|null} Response with { success, categories, prompts }
+ */
+export async function deleteCategory(category, reassignTo = "Favorites") {
+    try {
+        const resp = await fetch("/easyllm/prompts/categories/delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ category, reassign_to: reassignTo }),
+        });
+        if (!resp.ok) {
+            const text = await resp.text();
+            console.error(`[LLM Chat] Delete category HTTP ${resp.status}:`, (text || "").slice(0, 300));
+            return null;
+        }
+        const result = await resp.json();
+        if (result && result.success !== false) {
+            notifyPromptsUpdated();
+        }
+        return result;
+    } catch (e) {
+        console.error("[LLM Chat] Failed to delete category:", e);
+        return null;
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// API: Export all prompts
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * Export ALL prompts with categories as a downloadable blob.
+ * Returns the export data directly (client can then trigger a download).
+ *
+ * @returns {Object|null} { categories: string[], prompts: array } or null on failure
+ */
+export async function exportAllPrompts() {
+    try {
+        const resp = await fetch("/easyllm/prompts/export");
+        if (!resp.ok) {
+            const text = await resp.text();
+            console.error(`[LLM Chat] Export prompts HTTP ${resp.status}:`, (text || "").slice(0, 300));
+            return null;
+        }
+        const data = await resp.json();
+        if (data.success && data.export) {
+            return data.export;
+        }
+        return null;
+    } catch (e) {
+        console.error("[LLM Chat] Failed to export prompts:", e);
         return null;
     }
 }
