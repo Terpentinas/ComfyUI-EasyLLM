@@ -25,9 +25,7 @@ Chat, prompt enhancement, and high-speed GGUF inference — all inside ComfyUI.
 
 ### 🎥 Demo Video
 
-<video src="media/simple-chat.mp4" poster="media/chat-pop-up.png" controls width="100%"></video>
-
-> Streaming chat demo — click play to watch.
+![Streaming chat demo](media/simple-chat.gif)
 
 ---
 
