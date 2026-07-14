@@ -36,12 +36,15 @@ Chat, prompt enhancement, and high-speed GGUF inference — all inside ComfyUI.
 | Feature | Description |
 |---------|-------------|
 | ⚡ **Local GGUF Inference** | 30–50+ tok/sec with llama.cpp C++ engine — same as Ollama/LM Studio |
-| 🔍 **Built-in Model Browser** | Search, filter, and manage GGUF models with auto vision detection |
-| 👁️ **Vision / Multimodal** | Upload images directly from chat — LLaVA, Qwen-VL, Gemma-3-Vision |
+| 🤖 **LLM Image Generation Agent** | Chat with the LLM — it decides when to generate or edit images, writes the prompts, and auto-queues your pipeline. Includes loadable workflows for Flux Klein 4B and other SD models |
+| 🔍 **Built-in Model Browser** | Search, filter, and manage GGUF models with auto vision detection and architecture identification |
+| 👁️ **Vision / Multimodal** | Upload images directly from chat — LLaVA, Qwen-VL, Gemma-3-Vision, with automatic mmproj detection |
 | 💬 **Streaming Chat** | Real-time token streaming with markdown rendering and conversation history |
-| 🔧 **Prompt Enhancement** | Transform simple concepts into detailed image prompts |
-| 📚 **System Prompt Manager** | 11 built-in templates + custom creation, import, export |
+| 🔧 **Prompt Enhancement** | Transform simple concepts into detailed image prompts — wire directly to CLIP Text Encode → KSampler |
+| 📚 **System Prompt Manager** | 11 built-in templates + custom creation, editing, import/export, and sharing — a complete prompt engineering toolkit |
 | 📝 **Text Utility Nodes** | 7 lightweight text processing nodes — no dependencies |
+| 🧹 **Smart History Database** | Persistent chat & enhancer history with atomic writes, auto-cleanup by age and size limits |
+| 🔗 **Socket-Chainable Inputs** | Feed `text` and `system_prompt` from other nodes — build dynamic multi-node prompt pipelines |
 
 📖 [See all features →](docs/features.md)
 
@@ -51,7 +54,15 @@ Chat, prompt enhancement, and high-speed GGUF inference — all inside ComfyUI.
 
 ### ⚡ GGUF Backend (Recommended — 30–50+ tok/sec)
 
-Install llama-cpp-python once:
+**One-click install** — double-click the launcher for your platform:
+
+| Platform | File |
+|----------|------|
+| 🪟 **Windows** | `launchers/run_launcher.bat` |
+| 🐧 **Linux** | `launchers/run_launcher.sh` |
+| 🍎 **macOS** | `launchers/run_launcher.command` |
+
+Or run manually:
 ```bash
 python custom_nodes\ComfyUI-EasyLLM\install.py
 ```
@@ -63,13 +74,26 @@ Minimal workflow:
      │ text: "explain how diffusion models work"
 ```
 
-### 🤖 CLIP Backend (No extra install)
+> 💡 **No models yet?** Open the **Model Browser** from the node — it searches your ComfyUI model folders and any custom directories you add.
+
+### 🤖 CLIP Backend (Zero install — works immediately)
 
 ```
 [Load CLIP (Anima)] ──> [EasyLLM] ──> [CLIP Text Encode] ──> [KSampler]
 ```
 
-Uses the Qwen model already loaded inside your CLIP text encoder.
+Uses the Qwen model already loaded inside your CLIP text encoder. No pip installs needed.
+
+### 🤖 LLM as Image Agent (Multi-Turn Generation)
+
+```
+EasyLLM ──trigger_prompt──► Trigger Router ──prompt──► CLIP Text Encode ──► KSampler
+                                            └──session──► Image Capture ◄── VAE Decode
+```
+
+The LLM outputs structured JSON with `action` fields (`generate_image`, `edit_image`, `just_chat`). The frontend auto-queues the pipeline when image generation is requested. Loadable workflows included for Flux Klein 4B and other models.
+
+📖 [Workflow examples →](docs/workflows.md)
 
 ---
 
@@ -77,9 +101,11 @@ Uses the Qwen model already loaded inside your CLIP text encoder.
 
 1. Clone into `ComfyUI/custom_nodes/`
 2. Restart ComfyUI
-3. (Optional) Run `python install.py` for GGUF acceleration
+3. For GGUF acceleration: double-click a launcher or run `python install.py`
 
-📖 [Full installation guide →](docs/installation.md)
+> 📦 **ComfyUI Manager users:** `install.py` is auto-discovered — GGUF backend installs automatically when adding via Manager.
+
+📖 [Full installation guide (all GPUs, manual install, troubleshooting) →](docs/installation.md)
 
 ---
 
